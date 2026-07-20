@@ -67,6 +67,16 @@ interface FinancialTransaction {
   createdAt: string;
 }
 
+interface DepositMethods {
+  id: number;
+  beneficiaryId: number;
+  bankAccountName: string;
+  bankIban: string;
+  bankName: string;
+  usdtWalletAddress: string;
+  usdtNetwork: string;
+}
+
 type View =
   | { page: "login" }
   | { page: "client-login"; slug: string }
@@ -1096,8 +1106,11 @@ function UserDashboard({
 }) {
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [depositToast, setDepositToast] = useState(false);
-  const [depositCountdown, setDepositCountdown] = useState(5);
+  const [showDepositModal, setShowDepositModal] = useState(false);
+  const [depositStep, setDepositStep] = useState<"choose" | "bank" | "usdt">("choose");
+  const [depositMethods, setDepositMethods] = useState<DepositMethods | null>(null);
+  const [depositMethodsLoading, setDepositMethodsLoading] = useState(false);
+  const [depositRequestSent, setDepositRequestSent] = useState<"bank" | "usdt" | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifPanel, setShowNotifPanel] = useState(false);
   const [showPopup, setShowPopup] = useState(false);
@@ -1130,6 +1143,14 @@ function UserDashboard({
     } catch { /* silent */ }
   }, [user.id]);
 
+  const loadDepositMethods = useCallback(async () => {
+    try {
+      const uid = Number(user.id);
+      const data = await apiFetch<DepositMethods | null>(`/beneficiaries/${uid}/deposit-methods`);
+      setDepositMethods(data);
+    } catch { /* silent */ }
+  }, [user.id]);
+
   useEffect(() => {
     if (onBack) return;
     const uid = Number(user.id);
@@ -1146,6 +1167,10 @@ function UserDashboard({
   useEffect(() => {
     void loadCustomPhases();
   }, [loadCustomPhases]);
+
+  useEffect(() => {
+    void loadDepositMethods();
+  }, [loadDepositMethods]);
 
   async function markRead(id: number) {
     try {
@@ -1633,31 +1658,14 @@ function UserDashboard({
             </button>
             <button
               onClick={() => {
-                if (!user.telegramLink) return;
-                const msg = "مرحبا كيف يمكنني دفع رسوم السحب";
-                void navigator.clipboard.writeText(msg).finally(() => {
-                  setDepositCountdown(5);
-                  setDepositToast(true);
-                  let remaining = 5;
-                  const tick = setInterval(() => {
-                    remaining -= 1;
-                    setDepositCountdown(remaining);
-                    if (remaining <= 0) {
-                      clearInterval(tick);
-                      setDepositToast(false);
-                      openTelegramDirect(user.telegramLink);
-                    }
-                  }, 1000);
-                });
+                setDepositStep("choose");
+                setDepositRequestSent(null);
+                setShowDepositModal(true);
               }}
               className="w-full flex items-center justify-center gap-3 px-6 py-[14px] rounded-2xl text-white font-bold text-[14px] shadow-md active:opacity-90 transition-opacity"
-              style={{
-                background: "linear-gradient(135deg,#0f7a38 0%,#16a34a 50%,#22c55e 100%)",
-                opacity: user.telegramLink ? 1 : 0.5,
-                cursor: user.telegramLink ? "pointer" : "not-allowed",
-              }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248-2.074 9.763c-.154.7-.566.87-1.148.54l-3.18-2.34-1.534 1.473c-.17.17-.312.312-.64.312l.228-3.233 5.88-5.306c.255-.228-.055-.354-.397-.126L6.91 14.41l-3.13-.978c-.68-.212-.693-.68.142-.998l12.24-4.717c.567-.206 1.063.126.4.531z"/>
+              style={{ background: "linear-gradient(135deg,#0f7a38 0%,#16a34a 50%,#22c55e 100%)" }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>
               </svg>
               <span>إيداع الأموال</span>
             </button>
@@ -2272,63 +2280,350 @@ function UserDashboard({
         />
       )}
 
-      {/* Deposit toast — centered modal */}
-      {depositToast && (
+      {/* Deposit Modal */}
+      {showDepositModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center px-5"
-          style={{ background: "rgba(10,15,40,0.55)", backdropFilter: "blur(4px)", fontFamily: "'Cairo', sans-serif" }}
+          className="fixed inset-0 z-50 flex items-end justify-center"
+          style={{ background: "rgba(10,15,40,0.6)", backdropFilter: "blur(6px)", fontFamily: "'Cairo', sans-serif" }}
           dir="rtl"
+          onClick={(e) => { if (e.target === e.currentTarget) { setShowDepositModal(false); setDepositStep("choose"); } }}
         >
           <div
-            className="w-full max-w-xs rounded-3xl overflow-hidden shadow-2xl"
-            style={{
-              background: "white",
-              animation: "popIn 0.25s cubic-bezier(.175,.885,.32,1.275)",
-            }}
+            className="w-full max-w-md rounded-t-3xl overflow-hidden shadow-2xl"
+            style={{ background: "white", animation: "slideUp 0.3s cubic-bezier(.175,.885,.32,1.275)", maxHeight: "92vh", overflowY: "auto" }}
           >
-            <style>{`@keyframes popIn { from { opacity:0; transform:scale(0.85); } to { opacity:1; transform:scale(1); } }`}</style>
+            <style>{`@keyframes slideUp { from { opacity:0; transform:translateY(60px); } to { opacity:1; transform:translateY(0); } } @keyframes popIn { from { opacity:0; transform:scale(0.85); } to { opacity:1; transform:scale(1); } }`}</style>
 
-            {/* Header */}
-            <div className="flex flex-col items-center pt-7 pb-5 px-6"
-              style={{ background: "linear-gradient(135deg,#0077b5 0%,#0088cc 60%,#29b6f6 100%)" }}>
-              <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-3"
-                style={{ background: "rgba(255,255,255,0.2)", border: "2px solid rgba(255,255,255,0.35)" }}>
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="white">
-                  <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248-2.074 9.763c-.154.7-.566.87-1.148.54l-3.18-2.34-1.534 1.473c-.17.17-.312.312-.64.312l.228-3.233 5.88-5.306c.255-.228-.055-.354-.397-.126L6.91 14.41l-3.13-.978c-.68-.212-.693-.68.142-.998l12.24-4.717c.567-.206 1.063.126.4.531z"/>
-                </svg>
-              </div>
-              <p className="text-white font-extrabold text-[17px]">جارٍ فتح تلجرام</p>
-              <p className="text-white/75 text-[12px] font-medium mt-0.5">سيتم توجيهك خلال ثوانٍ...</p>
+            {/* Handle bar */}
+            <div className="flex justify-center pt-3 pb-1">
+              <div className="w-10 h-1 rounded-full bg-gray-200" />
             </div>
 
-            {/* Message box */}
-            <div className="px-5 py-5">
-              <p className="text-[11px] font-bold text-[#8892a4] mb-2 text-right">الرسالة المُعدَّة مسبقاً</p>
-              <div className="rounded-2xl px-4 py-3 text-right"
-                style={{ background: "#f0f9ff", border: "1.5px solid #bae6fd" }}>
-                <p className="text-[14px] font-bold text-[#0c4a6e] leading-relaxed">
-                  مرحبا كيف يمكنني دفع رسوم السحب
-                </p>
-              </div>
-              <div className="flex flex-col items-center mt-4 gap-2">
-                <div className="relative w-14 h-14">
-                  <svg className="w-14 h-14 -rotate-90" viewBox="0 0 56 56">
-                    <circle cx="28" cy="28" r="24" fill="none" stroke="#e0f0ff" strokeWidth="4"/>
-                    <circle cx="28" cy="28" r="24" fill="none" stroke="#0088cc" strokeWidth="4"
-                      strokeDasharray={`${2 * Math.PI * 24}`}
-                      strokeDashoffset={`${2 * Math.PI * 24 * (1 - depositCountdown / 5)}`}
-                      strokeLinecap="round"
-                      style={{ transition: "stroke-dashoffset 0.9s linear" }}
-                    />
+            {/* Header */}
+            <div className="px-5 pt-3 pb-4 text-right">
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => { if (depositStep !== "choose") { setDepositStep("choose"); setDepositRequestSent(null); } else { setShowDepositModal(false); } }}
+                  className="w-8 h-8 flex items-center justify-center rounded-xl text-[#8892a4] hover:bg-gray-100 transition-colors"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
-                  <span className="absolute inset-0 flex items-center justify-center text-[18px] font-extrabold text-[#0088cc]">
-                    {depositCountdown}
-                  </span>
+                </button>
+                <div>
+                  <h2 className="text-[18px] font-extrabold text-[#1a1f3c]">إيداع الأموال</h2>
+                  <p className="text-[11px] text-[#8892a4] font-medium mt-0.5">
+                    {depositStep === "choose" ? "اختر طريقة الإيداع المناسبة" : depositStep === "bank" ? "الإيداع البنكي" : "إيداع USDT"}
+                  </p>
                 </div>
-                <p className="text-[12px] text-[#8892a4] font-medium text-center">
-                  يفتح تلجرام خلال <span className="font-bold text-[#0088cc]">{depositCountdown}</span> ثوانٍ — الصق الرسالة بعدها
-                </p>
               </div>
+            </div>
+
+            <div className="px-5 pb-8">
+
+              {/* STEP: Choose */}
+              {depositStep === "choose" && (
+                <div className="flex flex-col gap-4">
+                  {/* Bank option */}
+                  <button
+                    onClick={async () => {
+                      setDepositMethodsLoading(true);
+                      await loadDepositMethods();
+                      setDepositMethodsLoading(false);
+                      setDepositStep("bank");
+                    }}
+                    className="w-full flex items-center gap-4 p-4 rounded-2xl text-right transition-all active:scale-[0.98]"
+                    style={{ background: "linear-gradient(135deg,#f0f4ff,#e8f0ff)", border: "2px solid #c7d7ff" }}
+                  >
+                    <div className="w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0"
+                      style={{ background: "linear-gradient(135deg,#2952e3,#4f46e5)" }}>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" strokeWidth="0"/>
+                        <polyline points="9 22 9 12 15 12 15 22" fill="white"/>
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-[15px] font-extrabold text-[#1a1f3c]">إيداع بنكي</p>
+                      <p className="text-[11px] text-[#5a6282] font-medium mt-0.5">تحويل بنكي عبر الآيبان أو رقم الحساب</p>
+                    </div>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2952e3" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="15 18 9 12 15 6"/>
+                    </svg>
+                  </button>
+
+                  {/* USDT option */}
+                  <button
+                    onClick={async () => {
+                      setDepositMethodsLoading(true);
+                      await loadDepositMethods();
+                      setDepositMethodsLoading(false);
+                      setDepositStep("usdt");
+                    }}
+                    className="w-full flex items-center gap-4 p-4 rounded-2xl text-right transition-all active:scale-[0.98]"
+                    style={{ background: "linear-gradient(135deg,#f0fdf4,#dcfce7)", border: "2px solid #bbf7d0" }}
+                  >
+                    <div className="w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0"
+                      style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
+                        <circle cx="12" cy="12" r="10" strokeWidth="0"/>
+                        <path d="M8 12h8M12 8v8" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-[15px] font-extrabold text-[#1a1f3c]">عملة USDT</p>
+                      <p className="text-[11px] text-[#5a6282] font-medium mt-0.5">إيداع عبر العملة الرقمية USDT / Bitcoin</p>
+                    </div>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#059669" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="15 18 9 12 15 6"/>
+                    </svg>
+                  </button>
+
+                  {/* Telegram support */}
+                  {user.telegramLink && (
+                    <div className="mt-2 p-4 rounded-2xl text-right" style={{ background: "#f0f9ff", border: "1.5px solid #bae6fd" }}>
+                      <p className="text-[12px] font-bold text-[#0369a1] mb-2">تواصل مع فريق الدعم</p>
+                      <p className="text-[11px] text-[#5a6282] font-medium mb-3">هل تحتاج مساعدة في عملية الإيداع؟ فريق الدعم جاهز لمساعدتك</p>
+                      <button
+                        onClick={() => { openTelegramDirect(user.telegramLink); }}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-white text-[13px] font-bold w-full justify-center transition-opacity active:opacity-80"
+                        style={{ background: "linear-gradient(135deg,#0077b5,#0088cc)" }}
+                      >
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248-2.074 9.763c-.154.7-.566.87-1.148.54l-3.18-2.34-1.534 1.473c-.17.17-.312.312-.64.312l.228-3.233 5.88-5.306c.255-.228-.055-.354-.397-.126L6.91 14.41l-3.13-.978c-.68-.212-.693-.68.142-.998l12.24-4.717c.567-.206 1.063.126.4.531z"/>
+                        </svg>
+                        <span>تواصل مع الدعم عبر تلجرام</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* STEP: Bank */}
+              {depositStep === "bank" && (
+                <div>
+                  {depositMethodsLoading ? (
+                    <div className="flex flex-col items-center py-10 gap-3">
+                      <div className="w-10 h-10 rounded-full border-4 border-[#e2e8f0] border-t-[#2952e3] animate-spin" />
+                      <p className="text-[12px] text-[#8892a4] font-medium">جارٍ التحميل...</p>
+                    </div>
+                  ) : depositMethods?.bankIban || depositMethods?.bankAccountName ? (
+                    /* Bank data available — show it */
+                    <div className="flex flex-col gap-4">
+                      <div className="rounded-2xl p-5 text-right"
+                        style={{ background: "linear-gradient(135deg,#1e3a8a,#2952e3)", position: "relative", overflow: "hidden" }}>
+                        <div className="absolute -top-6 -left-6 w-24 h-24 rounded-full opacity-15" style={{ background: "rgba(255,255,255,0.4)" }} />
+                        <p className="text-white/70 text-[11px] font-medium mb-1">بيانات الحساب البنكي</p>
+                        <div className="flex flex-col gap-3 mt-3">
+                          {depositMethods.bankAccountName && (
+                            <div>
+                              <p className="text-white/60 text-[10px] font-semibold mb-0.5">اسم صاحب الحساب</p>
+                              <p className="text-white font-bold text-[15px]">{depositMethods.bankAccountName}</p>
+                            </div>
+                          )}
+                          {depositMethods.bankName && (
+                            <div>
+                              <p className="text-white/60 text-[10px] font-semibold mb-0.5">اسم البنك</p>
+                              <p className="text-white font-bold text-[14px]">{depositMethods.bankName}</p>
+                            </div>
+                          )}
+                          {depositMethods.bankIban && (
+                            <div>
+                              <p className="text-white/60 text-[10px] font-semibold mb-0.5">رقم الآيبان / الحساب</p>
+                              <p className="text-white font-bold text-[13px] tracking-wider" dir="ltr" style={{ textAlign: "right" }}>{depositMethods.bankIban}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="p-3.5 rounded-2xl text-right" style={{ background: "#f0fdf4", border: "1.5px solid #bbf7d0" }}>
+                        <p className="text-[12px] font-bold text-[#15803d]">يرجى التحويل على الحساب أعلاه وإرسال إيصال التحويل إلى فريق الدعم</p>
+                      </div>
+                      {user.telegramLink && (
+                        <button
+                          onClick={() => openTelegramDirect(user.telegramLink)}
+                          className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl text-white font-bold text-[13px] transition-opacity active:opacity-80"
+                          style={{ background: "linear-gradient(135deg,#0077b5,#0088cc)" }}
+                        >
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248-2.074 9.763c-.154.7-.566.87-1.148.54l-3.18-2.34-1.534 1.473c-.17.17-.312.312-.64.312l.228-3.233 5.88-5.306c.255-.228-.055-.354-.397-.126L6.91 14.41l-3.13-.978c-.68-.212-.693-.68.142-.998l12.24-4.717c.567-.206 1.063.126.4.531z"/>
+                          </svg>
+                          <span>إرسال إيصال التحويل عبر تلجرام</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : depositRequestSent === "bank" ? (
+                    /* Request already sent */
+                    <div className="flex flex-col items-center py-8 gap-4 text-center">
+                      <div className="w-16 h-16 rounded-2xl flex items-center justify-center"
+                        style={{ background: "linear-gradient(135deg,#f0f9ff,#dbeafe)", border: "2px solid #bae6fd" }}>
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2952e3" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <p className="text-[16px] font-extrabold text-[#1a1f3c]">جارٍ المعالجة</p>
+                        <p className="text-[12px] text-[#5a6282] font-medium mt-1.5 leading-relaxed">
+                          تم إرسال طلبك إلى المسؤول.<br/>سيتم إرسال بيانات حساب الإيداع إليك في أقرب وقت.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    /* No bank data — send request */
+                    <div className="flex flex-col gap-4">
+                      <div className="p-4 rounded-2xl text-right" style={{ background: "#f8f9fc", border: "1.5px solid #e2e8f0" }}>
+                        <div className="flex items-center gap-3 justify-end mb-2">
+                          <p className="text-[14px] font-bold text-[#1a1f3c]">بيانات الحساب البنكي</p>
+                          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                            style={{ background: "linear-gradient(135deg,#2952e3,#4f46e5)" }}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
+                              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                            </svg>
+                          </div>
+                        </div>
+                        <p className="text-[12px] text-[#5a6282] font-medium leading-relaxed">
+                          لم يتم تحديد بيانات الحساب البنكي بعد. اضغط على الزر أدناه لطلب بيانات الإيداع من المسؤول وسيتم إرسالها إليك في أقرب وقت.
+                        </p>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await apiFetch(`/beneficiaries/${user.id}/deposit-request`, {
+                              method: "POST",
+                              body: JSON.stringify({ method: "bank" }),
+                            });
+                            setDepositRequestSent("bank");
+                          } catch { alert("فشل إرسال الطلب، حاول مرة أخرى"); }
+                        }}
+                        className="w-full py-3.5 rounded-2xl text-white font-bold text-[14px] transition-opacity active:opacity-80"
+                        style={{ background: "linear-gradient(135deg,#2952e3,#4f46e5)" }}
+                      >
+                        طلب بيانات الإيداع البنكي
+                      </button>
+                      {user.telegramLink && (
+                        <button
+                          onClick={() => openTelegramDirect(user.telegramLink)}
+                          className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-[13px] transition-opacity active:opacity-80"
+                          style={{ background: "#f0f9ff", color: "#0369a1", border: "1.5px solid #bae6fd" }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248-2.074 9.763c-.154.7-.566.87-1.148.54l-3.18-2.34-1.534 1.473c-.17.17-.312.312-.64.312l.228-3.233 5.88-5.306c.255-.228-.055-.354-.397-.126L6.91 14.41l-3.13-.978c-.68-.212-.693-.68.142-.998l12.24-4.717c.567-.206 1.063.126.4.531z"/>
+                          </svg>
+                          <span>تواصل مع الدعم مباشرةً</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* STEP: USDT */}
+              {depositStep === "usdt" && (
+                <div>
+                  {depositMethodsLoading ? (
+                    <div className="flex flex-col items-center py-10 gap-3">
+                      <div className="w-10 h-10 rounded-full border-4 border-[#e2e8f0] border-t-[#059669] animate-spin" />
+                      <p className="text-[12px] text-[#8892a4] font-medium">جارٍ التحميل...</p>
+                    </div>
+                  ) : depositMethods?.usdtWalletAddress ? (
+                    /* USDT data available — show it */
+                    <div className="flex flex-col gap-4">
+                      <div className="rounded-2xl p-5 text-right"
+                        style={{ background: "linear-gradient(135deg,#064e3b,#059669)", position: "relative", overflow: "hidden" }}>
+                        <div className="absolute -bottom-6 -left-6 w-24 h-24 rounded-full opacity-15" style={{ background: "rgba(255,255,255,0.4)" }} />
+                        <p className="text-white/70 text-[11px] font-medium mb-1">بيانات محفظة USDT</p>
+                        <div className="flex flex-col gap-3 mt-3">
+                          {depositMethods.usdtNetwork && (
+                            <div>
+                              <p className="text-white/60 text-[10px] font-semibold mb-0.5">نوع الشبكة</p>
+                              <p className="text-white font-bold text-[15px]">{depositMethods.usdtNetwork}</p>
+                            </div>
+                          )}
+                          <div>
+                            <p className="text-white/60 text-[10px] font-semibold mb-0.5">عنوان المحفظة</p>
+                            <p className="text-white font-bold text-[12px] break-all leading-relaxed" dir="ltr" style={{ textAlign: "right" }}>
+                              {depositMethods.usdtWalletAddress}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => void navigator.clipboard.writeText(depositMethods.usdtWalletAddress)}
+                        className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-[13px] transition-opacity active:opacity-80"
+                        style={{ background: "#f0fdf4", color: "#059669", border: "1.5px solid #bbf7d0" }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                        </svg>
+                        <span>نسخ عنوان المحفظة</span>
+                      </button>
+                      <div className="p-3.5 rounded-2xl text-right" style={{ background: "#fffbeb", border: "1.5px solid #fde68a" }}>
+                        <p className="text-[12px] font-bold text-[#b45309]">تأكد من استخدام الشبكة الصحيحة عند الإيداع لتجنب فقدان الأموال</p>
+                      </div>
+                    </div>
+                  ) : depositRequestSent === "usdt" ? (
+                    /* Request already sent */
+                    <div className="flex flex-col items-center py-8 gap-4 text-center">
+                      <div className="w-16 h-16 rounded-2xl flex items-center justify-center"
+                        style={{ background: "linear-gradient(135deg,#f0fdf4,#dcfce7)", border: "2px solid #bbf7d0" }}>
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#059669" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <p className="text-[16px] font-extrabold text-[#1a1f3c]">جارٍ المعالجة</p>
+                        <p className="text-[12px] text-[#5a6282] font-medium mt-1.5 leading-relaxed">
+                          تم إرسال طلبك إلى المسؤول.<br/>سيتم إرسال رابط محفظة USDT الخاصة بك خلال ثوانٍ.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    /* No USDT data — send request */
+                    <div className="flex flex-col gap-4">
+                      <div className="p-4 rounded-2xl text-right" style={{ background: "#f8f9fc", border: "1.5px solid #e2e8f0" }}>
+                        <div className="flex items-center gap-3 justify-end mb-2">
+                          <p className="text-[14px] font-bold text-[#1a1f3c]">بيانات محفظة USDT</p>
+                          <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                            style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
+                              <circle cx="12" cy="12" r="10" strokeWidth="0"/><path d="M8 12h8M12 8v8" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+                            </svg>
+                          </div>
+                        </div>
+                        <p className="text-[12px] text-[#5a6282] font-medium leading-relaxed">
+                          لم يتم تحديد بيانات محفظة USDT بعد. اضغط على الزر أدناه لطلب رابط الإيداع من المسؤول وسيتم إرساله إليك فوراً.
+                        </p>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await apiFetch(`/beneficiaries/${user.id}/deposit-request`, {
+                              method: "POST",
+                              body: JSON.stringify({ method: "usdt" }),
+                            });
+                            setDepositRequestSent("usdt");
+                          } catch { alert("فشل إرسال الطلب، حاول مرة أخرى"); }
+                        }}
+                        className="w-full py-3.5 rounded-2xl text-white font-bold text-[14px] transition-opacity active:opacity-80"
+                        style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}
+                      >
+                        طلب رابط إيداع USDT
+                      </button>
+                      {user.telegramLink && (
+                        <button
+                          onClick={() => openTelegramDirect(user.telegramLink)}
+                          className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-[13px] transition-opacity active:opacity-80"
+                          style={{ background: "#f0f9ff", color: "#0369a1", border: "1.5px solid #bae6fd" }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248-2.074 9.763c-.154.7-.566.87-1.148.54l-3.18-2.34-1.534 1.473c-.17.17-.312.312-.64.312l.228-3.233 5.88-5.306c.255-.228-.055-.354-.397-.126L6.91 14.41l-3.13-.978c-.68-.212-.693-.68.142-.998l12.24-4.717c.567-.206 1.063.126.4.531z"/>
+                          </svg>
+                          <span>تواصل مع الدعم مباشرةً</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
             </div>
           </div>
         </div>
@@ -2532,6 +2827,15 @@ function AdminDashboard({
   const [newPhaseCardColor, setNewPhaseCardColor] = useState("");
   const [editPhase, setEditPhase] = useState<CustomPhase | null>(null);
   const [deletePhaseId, setDeletePhaseId] = useState<number | null>(null);
+  // Deposit management state
+  const [depositModalUserId, setDepositModalUserId] = useState<string | null>(null);
+  const [depositData, setDepositData] = useState<DepositMethods | null>(null);
+  const [depositLoading, setDepositLoading] = useState(false);
+  const [depositSaving, setDepositSaving] = useState(false);
+  const [depositForm, setDepositForm] = useState({
+    bankAccountName: "", bankIban: "", bankName: "",
+    usdtWalletAddress: "", usdtNetwork: "",
+  });
 
   const loadPhases = useCallback(async () => {
     setPhaseLoading(true);
@@ -2586,6 +2890,43 @@ function AdminDashboard({
       await loadPhases();
     } catch (e) { alert("فشل حذف المرحلة: " + (e instanceof Error ? e.message : "خطأ")); }
     finally { setPhaseLoading(false); }
+  }
+
+  async function openDepositModal(userId: string) {
+    setDepositModalUserId(userId);
+    setDepositLoading(true);
+    setDepositData(null);
+    setDepositForm({ bankAccountName: "", bankIban: "", bankName: "", usdtWalletAddress: "", usdtNetwork: "" });
+    try {
+      const data = await apiFetch<DepositMethods | null>(`/beneficiaries/${userId}/deposit-methods`);
+      setDepositData(data);
+      if (data) {
+        setDepositForm({
+          bankAccountName: data.bankAccountName,
+          bankIban: data.bankIban,
+          bankName: data.bankName,
+          usdtWalletAddress: data.usdtWalletAddress,
+          usdtNetwork: data.usdtNetwork,
+        });
+      }
+    } catch { /* silent */ }
+    finally { setDepositLoading(false); }
+  }
+
+  async function saveDepositMethods() {
+    if (!depositModalUserId) return;
+    setDepositSaving(true);
+    try {
+      await apiFetch(`/beneficiaries/${depositModalUserId}/deposit-methods`, {
+        method: "PUT",
+        body: JSON.stringify(depositForm),
+      });
+      setDepositModalUserId(null);
+    } catch (e) {
+      alert("فشل حفظ بيانات الإيداع: " + (e instanceof Error ? e.message : "خطأ"));
+    } finally {
+      setDepositSaving(false);
+    }
   }
 
   function copyUrl(userId: string, url: string) {
@@ -3029,6 +3370,18 @@ function AdminDashboard({
                 );
               })()}
 
+              {/* Deposit methods button */}
+              <button
+                onClick={() => void openDepositModal(user.id)}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-[12px] font-bold transition-colors mb-2"
+                style={{ background: "linear-gradient(135deg,#f0fdf4,#dcfce7)", color: "#059669", border: "1.5px solid #86efac" }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>
+                </svg>
+                <span>بيانات الإيداع</span>
+              </button>
+
               {/* Action buttons */}
               <div className="flex gap-2">
                 <button onClick={() => setModal({ type: "edit", userId: user.id })}
@@ -3114,6 +3467,188 @@ function AdminDashboard({
           onConfirm={handleToggleDisable}
           onCancel={() => setModal({ type: "none" })}
         />
+      )}
+
+      {/* Deposit Methods Modal */}
+      {depositModalUserId && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center"
+          style={{ background: "rgba(10,15,40,0.6)", backdropFilter: "blur(6px)", fontFamily: "'Cairo', sans-serif" }}
+          dir="rtl"
+          onClick={(e) => { if (e.target === e.currentTarget) setDepositModalUserId(null); }}
+        >
+          <div
+            className="w-full max-w-md rounded-t-3xl shadow-2xl bg-white"
+            style={{ animation: "slideUp 0.3s cubic-bezier(.175,.885,.32,1.275)", maxHeight: "92vh", overflowY: "auto" }}
+          >
+            <style>{`@keyframes slideUp { from { opacity:0; transform:translateY(60px); } to { opacity:1; transform:translateY(0); } }`}</style>
+
+            {/* Handle */}
+            <div className="flex justify-center pt-3 pb-1">
+              <div className="w-10 h-1 rounded-full bg-gray-200" />
+            </div>
+
+            {/* Header */}
+            <div className="px-5 pt-3 pb-4 flex items-center justify-between">
+              <button
+                onClick={() => setDepositModalUserId(null)}
+                className="w-8 h-8 flex items-center justify-center rounded-xl text-[#8892a4] hover:bg-gray-100"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+              <div className="text-right">
+                <h2 className="text-[17px] font-extrabold text-[#1a1f3c]">بيانات الإيداع</h2>
+                <p className="text-[11px] text-[#8892a4] font-medium">
+                  {users.find(u => u.id === depositModalUserId)?.name ?? ""}
+                </p>
+              </div>
+            </div>
+
+            {depositLoading ? (
+              <div className="flex flex-col items-center py-12 gap-3">
+                <div className="w-10 h-10 rounded-full border-4 border-[#e2e8f0] border-t-[#059669] animate-spin" />
+                <p className="text-[12px] text-[#8892a4] font-medium">جارٍ التحميل...</p>
+              </div>
+            ) : (
+              <div className="px-5 pb-8 flex flex-col gap-5">
+
+                {/* Current deposit status summary */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3 rounded-2xl text-center" style={{
+                    background: depositData?.bankIban ? "#f0fdf4" : "#f8f9fc",
+                    border: `1.5px solid ${depositData?.bankIban ? "#86efac" : "#e2e8f0"}`
+                  }}>
+                    <div className="w-8 h-8 rounded-xl flex items-center justify-center mx-auto mb-1.5" style={{
+                      background: depositData?.bankIban ? "linear-gradient(135deg,#059669,#10b981)" : "#e2e8f0"
+                    }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                      </svg>
+                    </div>
+                    <p className="text-[11px] font-bold" style={{ color: depositData?.bankIban ? "#059669" : "#8892a4" }}>
+                      {depositData?.bankIban ? "مُعدّ" : "غير مُعدّ"}
+                    </p>
+                    <p className="text-[10px] text-[#8892a4] font-medium mt-0.5">الإيداع البنكي</p>
+                  </div>
+                  <div className="p-3 rounded-2xl text-center" style={{
+                    background: depositData?.usdtWalletAddress ? "#f0fdf4" : "#f8f9fc",
+                    border: `1.5px solid ${depositData?.usdtWalletAddress ? "#86efac" : "#e2e8f0"}`
+                  }}>
+                    <div className="w-8 h-8 rounded-xl flex items-center justify-center mx-auto mb-1.5" style={{
+                      background: depositData?.usdtWalletAddress ? "linear-gradient(135deg,#059669,#10b981)" : "#e2e8f0"
+                    }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                        <circle cx="12" cy="12" r="10" strokeWidth="0"/><path d="M8 12h8M12 8v8" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+                      </svg>
+                    </div>
+                    <p className="text-[11px] font-bold" style={{ color: depositData?.usdtWalletAddress ? "#059669" : "#8892a4" }}>
+                      {depositData?.usdtWalletAddress ? "مُعدّ" : "غير مُعدّ"}
+                    </p>
+                    <p className="text-[10px] text-[#8892a4] font-medium mt-0.5">محفظة USDT</p>
+                  </div>
+                </div>
+
+                {/* Bank section */}
+                <div className="rounded-2xl overflow-hidden border border-[#e2e8f0]">
+                  <div className="px-4 py-3 flex items-center gap-3"
+                    style={{ background: "linear-gradient(135deg,#2952e3,#4f46e5)" }}>
+                    <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/20">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                      </svg>
+                    </div>
+                    <p className="text-white font-bold text-[13px]">بيانات الحساب البنكي</p>
+                  </div>
+                  <div className="p-4 flex flex-col gap-3 bg-[#f8f9fc]">
+                    <div>
+                      <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5 text-right">اسم صاحب الحساب</label>
+                      <input
+                        type="text"
+                        value={depositForm.bankAccountName}
+                        onChange={(e) => setDepositForm({ ...depositForm, bankAccountName: e.target.value })}
+                        placeholder="اسم صاحب الحساب البنكي..."
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[13px] font-semibold text-right outline-none focus:border-[#2952e3] transition-colors"
+                        dir="rtl"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5 text-right">اسم البنك</label>
+                      <input
+                        type="text"
+                        value={depositForm.bankName}
+                        onChange={(e) => setDepositForm({ ...depositForm, bankName: e.target.value })}
+                        placeholder="مثال: بنك الراجحي..."
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[13px] font-semibold text-right outline-none focus:border-[#2952e3] transition-colors"
+                        dir="rtl"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5 text-right">رقم الآيبان / رقم الحساب</label>
+                      <input
+                        type="text"
+                        value={depositForm.bankIban}
+                        onChange={(e) => setDepositForm({ ...depositForm, bankIban: e.target.value })}
+                        placeholder="SA0000000000000000000000"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[13px] font-bold outline-none focus:border-[#2952e3] transition-colors tracking-wider"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* USDT section */}
+                <div className="rounded-2xl overflow-hidden border border-[#e2e8f0]">
+                  <div className="px-4 py-3 flex items-center gap-3"
+                    style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}>
+                    <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/20">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+                        <circle cx="12" cy="12" r="10" strokeWidth="0"/><path d="M8 12h8M12 8v8" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+                      </svg>
+                    </div>
+                    <p className="text-white font-bold text-[13px]">بيانات محفظة USDT</p>
+                  </div>
+                  <div className="p-4 flex flex-col gap-3 bg-[#f8f9fc]">
+                    <div>
+                      <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5 text-right">نوع الشبكة</label>
+                      <input
+                        type="text"
+                        value={depositForm.usdtNetwork}
+                        onChange={(e) => setDepositForm({ ...depositForm, usdtNetwork: e.target.value })}
+                        placeholder="مثال: TRC20، ERC20، BEP20..."
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[13px] font-semibold text-right outline-none focus:border-[#059669] transition-colors"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5 text-right">رابط / عنوان المحفظة</label>
+                      <textarea
+                        value={depositForm.usdtWalletAddress}
+                        onChange={(e) => setDepositForm({ ...depositForm, usdtWalletAddress: e.target.value })}
+                        placeholder="عنوان المحفظة كاملاً..."
+                        rows={3}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[12px] font-semibold outline-none focus:border-[#059669] transition-colors resize-none"
+                        dir="ltr"
+                        style={{ wordBreak: "break-all" }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Save button */}
+                <button
+                  onClick={() => void saveDepositMethods()}
+                  disabled={depositSaving}
+                  className="w-full py-3.5 rounded-2xl text-white font-bold text-[14px] disabled:opacity-50 transition-opacity active:opacity-80"
+                  style={{ background: "linear-gradient(135deg,#059669,#10b981)" }}
+                >
+                  {depositSaving ? "جارٍ الحفظ..." : "حفظ بيانات الإيداع"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
