@@ -3612,14 +3612,22 @@ function AdminDashboard({
                   <div className="p-4 flex flex-col gap-3 bg-[#f8f9fc]">
                     <div>
                       <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5 text-right">نوع الشبكة</label>
-                      <input
-                        type="text"
+                      <select
                         value={depositForm.usdtNetwork}
                         onChange={(e) => setDepositForm({ ...depositForm, usdtNetwork: e.target.value })}
-                        placeholder="مثال: TRC20، ERC20، BEP20..."
-                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[13px] font-semibold text-right outline-none focus:border-[#059669] transition-colors"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[13px] font-semibold outline-none focus:border-[#059669] transition-colors appearance-none cursor-pointer"
                         dir="ltr"
-                      />
+                        style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238892a4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "left 12px center", paddingLeft: "36px" }}
+                      >
+                        <option value="">— اختر الشبكة —</option>
+                        <option value="TRC20">TRC20 (Tron)</option>
+                        <option value="ERC20">ERC20 (Ethereum)</option>
+                        <option value="BEP20">BEP20 (BSC)</option>
+                        <option value="SOL">SOL (Solana)</option>
+                        <option value="TON">TON (Telegram)</option>
+                        <option value="MATIC">MATIC (Polygon)</option>
+                        <option value="ARB">ARB (Arbitrum)</option>
+                      </select>
                     </div>
                     <div>
                       <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5 text-right">رابط / عنوان المحفظة</label>
