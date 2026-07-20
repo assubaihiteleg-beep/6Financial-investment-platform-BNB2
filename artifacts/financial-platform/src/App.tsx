@@ -1111,6 +1111,7 @@ function UserDashboard({
   const [depositMethods, setDepositMethods] = useState<DepositMethods | null>(null);
   const [depositMethodsLoading, setDepositMethodsLoading] = useState(false);
   const [depositRequestSent, setDepositRequestSent] = useState<"bank" | "usdt" | null>(null);
+  const [depositCopied, setDepositCopied] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifPanel, setShowNotifPanel] = useState(false);
   const [showPopup, setShowPopup] = useState(false);
@@ -2417,19 +2418,58 @@ function UserDashboard({
                           {depositMethods.bankAccountName && (
                             <div>
                               <p className="text-white/60 text-[10px] font-semibold mb-0.5">اسم صاحب الحساب</p>
-                              <p className="text-white font-bold text-[15px]">{depositMethods.bankAccountName}</p>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => { void navigator.clipboard.writeText(depositMethods.bankAccountName); setDepositCopied("bankAccountName"); setTimeout(() => setDepositCopied(null), 2000); }}
+                                  className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all active:scale-95"
+                                  style={{ background: depositCopied === "bankAccountName" ? "rgba(134,239,172,0.25)" : "rgba(255,255,255,0.15)" }}
+                                  title="نسخ"
+                                >
+                                  {depositCopied === "bankAccountName"
+                                    ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#86efac" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                    : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                  }
+                                </button>
+                                <p className="text-white font-bold text-[15px] flex-1">{depositMethods.bankAccountName}</p>
+                              </div>
                             </div>
                           )}
                           {depositMethods.bankName && (
                             <div>
                               <p className="text-white/60 text-[10px] font-semibold mb-0.5">اسم البنك</p>
-                              <p className="text-white font-bold text-[14px]">{depositMethods.bankName}</p>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => { void navigator.clipboard.writeText(depositMethods.bankName); setDepositCopied("bankName"); setTimeout(() => setDepositCopied(null), 2000); }}
+                                  className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all active:scale-95"
+                                  style={{ background: depositCopied === "bankName" ? "rgba(134,239,172,0.25)" : "rgba(255,255,255,0.15)" }}
+                                  title="نسخ"
+                                >
+                                  {depositCopied === "bankName"
+                                    ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#86efac" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                    : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                  }
+                                </button>
+                                <p className="text-white font-bold text-[14px] flex-1">{depositMethods.bankName}</p>
+                              </div>
                             </div>
                           )}
                           {depositMethods.bankIban && (
                             <div>
                               <p className="text-white/60 text-[10px] font-semibold mb-0.5">رقم الآيبان / الحساب</p>
-                              <p className="text-white font-bold text-[13px] tracking-wider" dir="ltr" style={{ textAlign: "right" }}>{depositMethods.bankIban}</p>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => { void navigator.clipboard.writeText(depositMethods.bankIban); setDepositCopied("bankIban"); setTimeout(() => setDepositCopied(null), 2000); }}
+                                  className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all active:scale-95"
+                                  style={{ background: depositCopied === "bankIban" ? "rgba(134,239,172,0.25)" : "rgba(255,255,255,0.15)" }}
+                                  title="نسخ"
+                                >
+                                  {depositCopied === "bankIban"
+                                    ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#86efac" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                    : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                  }
+                                </button>
+                                <p className="text-white font-bold text-[13px] tracking-wider flex-1" dir="ltr" style={{ textAlign: "right" }}>{depositMethods.bankIban}</p>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -2534,27 +2574,43 @@ function UserDashboard({
                           {depositMethods.usdtNetwork && (
                             <div>
                               <p className="text-white/60 text-[10px] font-semibold mb-0.5">نوع الشبكة</p>
-                              <p className="text-white font-bold text-[15px]">{depositMethods.usdtNetwork}</p>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => { void navigator.clipboard.writeText(depositMethods.usdtNetwork); setDepositCopied("usdtNetwork"); setTimeout(() => setDepositCopied(null), 2000); }}
+                                  className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all active:scale-95"
+                                  style={{ background: depositCopied === "usdtNetwork" ? "rgba(134,239,172,0.25)" : "rgba(255,255,255,0.15)" }}
+                                  title="نسخ"
+                                >
+                                  {depositCopied === "usdtNetwork"
+                                    ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#86efac" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                    : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                  }
+                                </button>
+                                <p className="text-white font-bold text-[15px] flex-1">{depositMethods.usdtNetwork}</p>
+                              </div>
                             </div>
                           )}
                           <div>
                             <p className="text-white/60 text-[10px] font-semibold mb-0.5">عنوان المحفظة</p>
-                            <p className="text-white font-bold text-[12px] break-all leading-relaxed" dir="ltr" style={{ textAlign: "right" }}>
-                              {depositMethods.usdtWalletAddress}
-                            </p>
+                            <div className="flex items-start gap-2">
+                              <button
+                                onClick={() => { void navigator.clipboard.writeText(depositMethods.usdtWalletAddress); setDepositCopied("usdtWallet"); setTimeout(() => setDepositCopied(null), 2000); }}
+                                className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all active:scale-95 mt-0.5"
+                                style={{ background: depositCopied === "usdtWallet" ? "rgba(134,239,172,0.25)" : "rgba(255,255,255,0.15)" }}
+                                title="نسخ"
+                              >
+                                {depositCopied === "usdtWallet"
+                                  ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#86efac" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                  : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                }
+                              </button>
+                              <p className="text-white font-bold text-[12px] break-all leading-relaxed flex-1" dir="ltr" style={{ textAlign: "right" }}>
+                                {depositMethods.usdtWalletAddress}
+                              </p>
+                            </div>
                           </div>
                         </div>
                       </div>
-                      <button
-                        onClick={() => void navigator.clipboard.writeText(depositMethods.usdtWalletAddress)}
-                        className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-[13px] transition-opacity active:opacity-80"
-                        style={{ background: "#f0fdf4", color: "#059669", border: "1.5px solid #bbf7d0" }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                        </svg>
-                        <span>نسخ عنوان المحفظة</span>
-                      </button>
                       <div className="p-3.5 rounded-2xl text-right" style={{ background: "#fffbeb", border: "1.5px solid #fde68a" }}>
                         <p className="text-[12px] font-bold text-[#b45309]">تأكد من استخدام الشبكة الصحيحة عند الإيداع لتجنب فقدان الأموال</p>
                       </div>
