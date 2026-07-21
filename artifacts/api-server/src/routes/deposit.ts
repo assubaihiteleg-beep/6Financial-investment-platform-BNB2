@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, depositMethodsTable, notificationsTable, beneficiariesTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 
 const router: IRouter = Router();
 
@@ -65,6 +65,27 @@ router.put("/beneficiaries/:id/deposit-methods", async (req, res): Promise<void>
         .returning();
     }
 
+    // Build a summary of what was saved to notify the beneficiary
+    const savedRow = row;
+    const parts: string[] = [];
+    if (savedRow.bankIban || savedRow.bankAccountName) {
+      parts.push("إيداع بنكي");
+    }
+    if (savedRow.usdtWalletAddress) {
+      parts.push("محفظة USDT");
+    }
+
+    if (parts.length > 0) {
+      const methodsLabel = parts.join(" و ");
+      await db.insert(notificationsTable).values({
+        beneficiaryId: id,
+        type: "deposit_ready" as "profits_added",   // reuse column — stored as custom string
+        title: "تم إرسال بيانات الإيداع ✅",
+        message: `تم إعداد بيانات الإيداع الخاصة بك (${methodsLabel}).\n\nيمكنك الآن الضغط على زر "إيداع الأموال" لعرض بيانات حسابك والبدء بالإيداع مباشرةً.`,
+        isRead: false,
+      });
+    }
+
     res.json(row);
   } catch (err) {
     req.log.error(err);
@@ -104,6 +125,31 @@ router.post("/beneficiaries/:id/deposit-request", async (req, res): Promise<void
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "فشل إرسال طلب الإيداع" });
+  }
+});
+
+// GET /admin/deposit-requests — all deposit_request notifications with beneficiary name
+router.get("/admin/deposit-requests", async (req, res): Promise<void> => {
+  try {
+    const rows = await db
+      .select({
+        id: notificationsTable.id,
+        beneficiaryId: notificationsTable.beneficiaryId,
+        title: notificationsTable.title,
+        message: notificationsTable.message,
+        isRead: notificationsTable.isRead,
+        createdAt: notificationsTable.createdAt,
+        beneficiaryName: beneficiariesTable.name,
+        beneficiaryUsername: beneficiariesTable.username,
+      })
+      .from(notificationsTable)
+      .innerJoin(beneficiariesTable, eq(notificationsTable.beneficiaryId, beneficiariesTable.id))
+      .where(eq(notificationsTable.type, "deposit_request"))
+      .orderBy(desc(notificationsTable.createdAt));
+    res.json(rows);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "فشل تحميل إشعارات الإيداع" });
   }
 });
 

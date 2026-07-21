@@ -51,11 +51,22 @@ interface UserCustomPhase {
 interface Notification {
   id: number;
   beneficiaryId: number;
-  type: "profits_added" | "fees_paid" | "liberation_fee_paid" | "transaction_fee_paid";
+  type: "profits_added" | "fees_paid" | "liberation_fee_paid" | "transaction_fee_paid" | "deposit_ready" | string;
   title: string;
   message: string;
   isRead: boolean;
   createdAt: string;
+}
+
+interface AdminDepositNotif {
+  id: number;
+  beneficiaryId: number;
+  title: string;
+  message: string;
+  isRead: boolean;
+  createdAt: string;
+  beneficiaryName: string;
+  beneficiaryUsername: string;
 }
 
 interface FinancialTransaction {
@@ -1156,13 +1167,27 @@ function UserDashboard({
     if (onBack) return;
     const uid = Number(user.id);
     if (!uid) return;
-    apiFetch<Notification[]>(`/beneficiaries/${uid}/notifications`)
-      .then((data) => {
-        setNotifications(data);
-        const first = data.find((n) => !n.isRead);
-        if (first) { setPopupNotif(first); setShowPopup(true); }
-      })
-      .catch(() => {});
+
+    const fetchNotifs = () => {
+      apiFetch<Notification[]>(`/beneficiaries/${uid}/notifications`)
+        .then((data) => {
+          setNotifications((prev) => {
+            // detect genuinely new unread notifications vs what we had before
+            const prevIds = new Set(prev.map((n) => n.id));
+            const newUnread = data.filter((n) => !n.isRead && !prevIds.has(n.id));
+            if (newUnread.length > 0) {
+              setPopupNotif(newUnread[0]);
+              setShowPopup(true);
+            }
+            return data;
+          });
+        })
+        .catch(() => {});
+    };
+
+    fetchNotifs();
+    const interval = setInterval(fetchNotifs, 20_000);
+    return () => clearInterval(interval);
   }, [user.id, onBack]);
 
   useEffect(() => {
@@ -1956,19 +1981,22 @@ function UserDashboard({
           <div className="w-full max-w-xs bg-white rounded-3xl overflow-hidden shadow-2xl"
             style={{ animation: "popIn 0.3s cubic-bezier(.175,.885,.32,1.275)" }}>
             <div className="px-5 pt-6 pb-3 text-center"
-              style={{ background: popupNotif.type === "profits_added" ? "linear-gradient(135deg,#0f7a38,#22c55e)" : "linear-gradient(135deg,#2952e3,#7c3aed)" }}>
-              <div className="text-[36px] mb-1">{popupNotif.type === "profits_added" ? "🎉" : "📢"}</div>
+              style={{ background: popupNotif.type === "profits_added" ? "linear-gradient(135deg,#0f7a38,#22c55e)" : popupNotif.type === "deposit_ready" ? "linear-gradient(135deg,#059669,#10b981)" : "linear-gradient(135deg,#2952e3,#7c3aed)" }}>
+              <div className="text-[36px] mb-1">{popupNotif.type === "profits_added" ? "🎉" : popupNotif.type === "deposit_ready" ? "💳" : "📢"}</div>
               <p className="text-white font-extrabold text-[15px]">إشعار جديد</p>
             </div>
             <div className="px-5 py-5">
               <p className="font-extrabold text-[14px] text-[#1a1f3c] mb-3 text-center">{popupNotif.title}</p>
               <div className="rounded-2xl p-4 mb-4 text-right text-[13px] leading-relaxed whitespace-pre-line font-medium text-[#374151]"
-                style={{ background: popupNotif.type === "profits_added" ? "#f0fdf4" : "#eff6ff", border: `1.5px solid ${popupNotif.type === "profits_added" ? "#bbf7d0" : "#bfdbfe"}` }}>
+                style={{
+                  background: popupNotif.type === "profits_added" ? "#f0fdf4" : popupNotif.type === "deposit_ready" ? "#f0fdf4" : "#eff6ff",
+                  border: `1.5px solid ${popupNotif.type === "profits_added" ? "#bbf7d0" : popupNotif.type === "deposit_ready" ? "#bbf7d0" : "#bfdbfe"}`
+                }}>
                 {popupNotif.message}
               </div>
               <button onClick={() => void dismissPopup()}
                 className="w-full py-3 rounded-2xl text-white font-bold text-[14px] transition-opacity active:opacity-90"
-                style={{ background: popupNotif.type === "profits_added" ? "linear-gradient(135deg,#0f7a38,#22c55e)" : "linear-gradient(135deg,#2952e3,#7c3aed)" }}>
+                style={{ background: popupNotif.type === "profits_added" ? "linear-gradient(135deg,#0f7a38,#22c55e)" : popupNotif.type === "deposit_ready" ? "linear-gradient(135deg,#059669,#10b981)" : "linear-gradient(135deg,#2952e3,#7c3aed)" }}>
                 حسناً
               </button>
             </div>
@@ -2010,7 +2038,7 @@ function UserDashboard({
                     style={{ background: n.isRead ? "white" : "#f5f7ff" }}>
                     <div className="flex items-start gap-3">
                       <div className="text-[24px] flex-shrink-0 mt-0.5">
-                        {n.type === "profits_added" ? "🎉" : "📢"}
+                        {n.type === "profits_added" ? "🎉" : n.type === "deposit_ready" ? "💳" : "📢"}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between mb-1">
@@ -2892,6 +2920,39 @@ function AdminDashboard({
     bankAccountName: "", bankIban: "", bankName: "",
     usdtWalletAddress: "", usdtNetwork: "",
   });
+  // Admin notifications state
+  const [adminNotifs, setAdminNotifs] = useState<AdminDepositNotif[]>([]);
+  const [showAdminNotifPanel, setShowAdminNotifPanel] = useState(false);
+
+  const loadAdminNotifs = useCallback(async () => {
+    try {
+      const data = await apiFetch<AdminDepositNotif[]>("/admin/deposit-requests");
+      setAdminNotifs(data);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => {
+    void loadAdminNotifs();
+    const interval = setInterval(() => void loadAdminNotifs(), 30_000);
+    return () => clearInterval(interval);
+  }, [loadAdminNotifs]);
+
+  const adminUnreadCount = adminNotifs.filter((n) => !n.isRead).length;
+
+  async function markAdminNotifRead(id: number) {
+    try {
+      await apiFetch(`/notifications/${id}/read`, { method: "PUT" });
+      setAdminNotifs((prev) => prev.map((n) => n.id === id ? { ...n, isRead: true } : n));
+    } catch { /* silent */ }
+  }
+
+  async function openDepositFromNotif(notif: AdminDepositNotif) {
+    await markAdminNotifRead(notif.id);
+    setShowAdminNotifPanel(false);
+    // find matching user string id
+    const userMatch = users.find((u) => u.id === String(notif.beneficiaryId));
+    if (userMatch) void openDepositModal(userMatch.id);
+  }
 
   const loadPhases = useCallback(async () => {
     setPhaseLoading(true);
@@ -3068,11 +3129,31 @@ function AdminDashboard({
       {/* Header */}
       <div className="px-4 pt-5 pb-4">
         <div className="flex items-center justify-between">
-          <button onClick={onLogout}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-[#d0d7e8] text-[#1a1f3c] text-[11px] font-semibold shadow-sm hover:bg-gray-50 transition-colors">
-            <Icon.Logout />
-            <span>خروج</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Notifications bell */}
+            <button
+              onClick={() => {
+                setShowAdminNotifPanel(true);
+                adminNotifs.filter((n) => !n.isRead).forEach((n) => void markAdminNotifRead(n.id));
+              }}
+              className="relative w-9 h-9 rounded-xl bg-white border border-[#d0d7e8] flex items-center justify-center shadow-sm hover:bg-gray-50 transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1a1f3c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+              </svg>
+              {adminUnreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center text-white font-extrabold"
+                  style={{ fontSize: "9px", background: "#ef4444" }}>
+                  {adminUnreadCount > 9 ? "9+" : adminUnreadCount}
+                </span>
+              )}
+            </button>
+            <button onClick={onLogout}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-[#d0d7e8] text-[#1a1f3c] text-[11px] font-semibold shadow-sm hover:bg-gray-50 transition-colors">
+              <Icon.Logout />
+              <span>خروج</span>
+            </button>
+          </div>
           <div className="text-right">
             <h1 className="text-[19px] font-extrabold text-[#1a1f3c]">قائمة المستفيدين</h1>
             <p className="text-[11px] text-[#5a6282] font-medium">مرحباً، المدير</p>
@@ -3523,6 +3604,113 @@ function AdminDashboard({
           onConfirm={handleToggleDisable}
           onCancel={() => setModal({ type: "none" })}
         />
+      )}
+
+      {/* Admin Notifications Panel */}
+      {showAdminNotifPanel && (
+        <div className="fixed inset-0 z-50 flex" dir="rtl"
+          style={{ fontFamily: "'Cairo', sans-serif" }}>
+          <div className="flex-1 bg-black/40 backdrop-blur-sm" onClick={() => setShowAdminNotifPanel(false)} />
+          <div className="w-full max-w-sm bg-white h-full overflow-y-auto flex flex-col shadow-2xl"
+            style={{ animation: "slideInRight 0.25s ease-out" }}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#eef0f6] sticky top-0 bg-white z-10">
+              <button onClick={() => setShowAdminNotifPanel(false)}
+                className="w-8 h-8 rounded-full bg-[#f3f5fa] flex items-center justify-center text-[#5a6282]">
+                <Icon.X />
+              </button>
+              <div className="text-right">
+                <h2 className="font-extrabold text-[16px] text-[#1a1f3c]">طلبات الإيداع</h2>
+                <p className="text-[11px] text-[#8892a4] font-medium">إشعارات المستفيدين</p>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-[#f3f5fa] flex items-center justify-center">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5a6282" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                </svg>
+              </div>
+            </div>
+
+            {/* List */}
+            <div className="flex flex-col gap-0 flex-1">
+              {adminNotifs.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center py-20 text-[#8892a4]">
+                  <div className="text-[40px] mb-3">📭</div>
+                  <p className="font-bold text-[13px]">لا توجد طلبات إيداع</p>
+                </div>
+              ) : (
+                adminNotifs.map((n) => {
+                  const d = new Date(n.createdAt);
+                  const date = d.toLocaleDateString("ar-SA", { day: "numeric", month: "short" });
+                  const time = d.toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" });
+                  const isBank = n.title.includes("بنكي");
+                  return (
+                    <div key={n.id}
+                      className="px-5 py-4 border-b border-[#eef0f6] text-right"
+                      style={{ background: n.isRead ? "white" : "#f0fdf4" }}>
+                      <div className="flex items-start gap-3">
+                        {/* Icon */}
+                        <div className="w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 mt-0.5"
+                          style={{ background: isBank ? "linear-gradient(135deg,#2952e3,#4f46e5)" : "linear-gradient(135deg,#059669,#10b981)" }}>
+                          {isBank ? (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                          ) : (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><circle cx="12" cy="12" r="10" strokeWidth="0"/><path d="M8 12h8M12 8v8" stroke="white" strokeWidth="2.5" strokeLinecap="round"/></svg>
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          {/* Unread badge + time */}
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-1 text-[#8892a4]">
+                              <span className="text-[10px] font-medium">{time}</span>
+                              <span className="text-[10px]">—</span>
+                              <span className="text-[10px] font-medium">{date}</span>
+                            </div>
+                            {!n.isRead && (
+                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-green-100 text-green-700">● جديد</span>
+                            )}
+                          </div>
+
+                          {/* Title */}
+                          <p className="font-extrabold text-[13px] text-[#1a1f3c] mb-0.5">{n.title}</p>
+
+                          {/* Beneficiary */}
+                          <p className="text-[11px] font-semibold mb-1" style={{ color: isBank ? "#2952e3" : "#059669" }}>
+                            {n.beneficiaryName} (@{n.beneficiaryUsername})
+                          </p>
+
+                          {/* Method tag */}
+                          <div className="flex justify-end mt-2">
+                            <span className="text-[10px] font-bold px-2.5 py-1 rounded-xl"
+                              style={{
+                                background: isBank ? "#eff6ff" : "#f0fdf4",
+                                color: isBank ? "#2952e3" : "#059669",
+                                border: `1px solid ${isBank ? "#bfdbfe" : "#bbf7d0"}`,
+                              }}>
+                              {isBank ? "🏦 إيداع بنكي" : "💰 إيداع USDT"}
+                            </span>
+                          </div>
+
+                          {/* Action button */}
+                          <button
+                            onClick={() => void openDepositFromNotif(n)}
+                            className="mt-3 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-white font-bold text-[12px] transition-opacity active:opacity-80"
+                            style={{ background: isBank ? "linear-gradient(135deg,#2952e3,#4f46e5)" : "linear-gradient(135deg,#059669,#10b981)" }}
+                          >
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                            <span>فتح بيانات الإيداع</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Deposit Methods Modal */}
