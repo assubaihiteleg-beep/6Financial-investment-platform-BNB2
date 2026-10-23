@@ -3,13 +3,25 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "dev": "node -e 'if(!require(\"fs\").existsSync(\"artifacts/api-server/dist/index.mjs\")||!require(\"fs\").existsSync(\"artifacts/financial-platform/dist/public/index.html\")){require(\"child_process\").execSync(\"npm run build\",{stdio:\"inherit\"})}' && node artifacts/api-server/dist/index.mjs",
+    "start": "node artifacts/api-server/dist/index.mjs",
+    "build:client": "npm run build --workspace=@workspace/financial-platform",
+    "build:server": "npm run build --workspace=@workspace/api-server",
+    "build": "npm run typecheck && npm run build:client && npm run build:server",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "npm run typecheck:libs && npm run typecheck --workspaces --if-present",
+    "lint": "npm run typecheck"
   },
   "private": true,
+  "workspaces": [
+    "artifacts/*",
+    "lib/*",
+    "lib/integrations/*",
+    "scripts"
+  ],
   "devDependencies": {
+    "dotenv": "^18.0.8",
+    "drizzle-kit": "^0.31.11",
     "prettier": "^3.8.3",
     "typescript": "~5.9.3"
   }

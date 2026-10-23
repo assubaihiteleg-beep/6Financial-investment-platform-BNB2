@@ -142,28 +142,65 @@ router.post("/beneficiaries/:id/add-fees", async (req, res): Promise<void> => {
 router.post("/beneficiaries/:id/pay-fees", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
+    const { paidAmount } = req.body as { paidAmount?: number | string };
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
     const paidAt = new Date();
-    const [updated] = await db
-      .update(beneficiariesTable)
-      .set({ fees: "0", withdrawalFeeStatus: "paid", withdrawalFeePaidAt: paidAt })
-      .where(eq(beneficiariesTable.id, id))
-      .returning();
+    const currentNum = parseFloat(String(current.fees).replace(/,/g, "")) || 0;
+    const paidNum = paidAmount !== undefined && paidAmount !== null ? parseFloat(String(paidAmount).replace(/,/g, "")) : currentNum;
 
-    const message = "تم سداد رسوم السحب الخاصة بحسابكم.\n\nسيتم تحرير الحساب وتفعيل السحب خلال 24 ساعة.";
-    await db.insert(notificationsTable).values({
-      beneficiaryId: id,
-      type: "fees_paid",
-      title: "تم سداد رسوم السحب",
-      message,
-      isRead: false,
-    });
+    if (isNaN(paidNum) || paidNum <= 0) {
+      res.status(400).json({ error: "يرجى إدخال مبلغ سداد صحيح" });
+      return;
+    }
 
-    await logTransaction(id, "pay_withdrawal_fees", current.fees, `تأكيد سداد رسوم السحب: ${current.fees} ر.س`);
+    if (paidNum < currentNum) {
+      // Partial payment
+      const remainingNum = Math.max(0, currentNum - paidNum);
+      const formattedRemaining = remainingNum.toLocaleString("en-US");
+      const formattedPaid = paidNum.toLocaleString("en-US");
 
-    res.json(updated);
+      const [updated] = await db
+        .update(beneficiariesTable)
+        .set({ fees: formattedRemaining, withdrawalFeeStatus: "partial", withdrawalFeePaidAt: paidAt })
+        .where(eq(beneficiariesTable.id, id))
+        .returning();
+
+      const message = `عزيزي المستثمر / ${current.name} 💳 تم استلام دفعة سداد بمبلغ ${formattedPaid} ر.س لرسوم السحب.\n\nالمبلغ المتبقي المطلوب عليكم لاستكمال العملية هو ${formattedRemaining} ر.س.`;
+      await db.insert(notificationsTable).values({
+        beneficiaryId: id,
+        type: "fees_paid_partial",
+        title: "إشعار سداد جزئي - رسوم السحب",
+        message,
+        isRead: false,
+      });
+
+      await logTransaction(id, "pay_withdrawal_fees_partial", String(paidNum), `سداد جزئي لرسوم السحب: تم سداد ${formattedPaid} ر.س (المتبقي: ${formattedRemaining} ر.س)`);
+
+      res.json(updated);
+    } else {
+      // Full payment
+      const formattedPaid = currentNum.toLocaleString("en-US");
+      const [updated] = await db
+        .update(beneficiariesTable)
+        .set({ fees: "0", withdrawalFeeStatus: "paid", withdrawalFeePaidAt: paidAt })
+        .where(eq(beneficiariesTable.id, id))
+        .returning();
+
+      const message = "تم سداد كامل رسوم السحب الخاصة بحسابكم بنجاح.\n\nسيتم تحرير الحساب وتفعيل السحب خلال 24 ساعة.";
+      await db.insert(notificationsTable).values({
+        beneficiaryId: id,
+        type: "fees_paid",
+        title: "تم سداد رسوم السحب بالكامل",
+        message,
+        isRead: false,
+      });
+
+      await logTransaction(id, "pay_withdrawal_fees", String(currentNum), `تأكيد سداد رسوم السحب بالكامل: ${formattedPaid} ر.س`);
+
+      res.json(updated);
+    }
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "فشل سداد الرسوم" });
@@ -196,28 +233,65 @@ router.post("/beneficiaries/:id/add-liberation-fee", async (req, res): Promise<v
 router.post("/beneficiaries/:id/pay-liberation-fee", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
+    const { paidAmount } = req.body as { paidAmount?: number | string };
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
     const paidAt = new Date();
-    const [updated] = await db
-      .update(beneficiariesTable)
-      .set({ liberationFeeStatus: "paid", liberationFeePaidAt: paidAt })
-      .where(eq(beneficiariesTable.id, id))
-      .returning();
+    const currentNum = parseFloat(String(current.liberationFee).replace(/,/g, "")) || 0;
+    const paidNum = paidAmount !== undefined && paidAmount !== null ? parseFloat(String(paidAmount).replace(/,/g, "")) : currentNum;
 
-    const message = `عزيز العميل / ${current.name} 🚨 تم تأكيد سداد رسوم تحرير الأرباح بنجاح ✅\n يرجى الإنتظار سوف يقوم النظام\n بتحرير  الأرباح  خلال أقل من 24 ساعة\nويتم تحرير أرباحك بنجاح ✅`;
-    await db.insert(notificationsTable).values({
-      beneficiaryId: id,
-      type: "liberation_fee_paid",
-      title: "تم تأكيد سداد رسوم تحرير الأرباح",
-      message,
-      isRead: false,
-    });
+    if (isNaN(paidNum) || paidNum <= 0) {
+      res.status(400).json({ error: "يرجى إدخال مبلغ سداد صحيح" });
+      return;
+    }
 
-    await logTransaction(id, "pay_liberation_fee", current.liberationFee, `تأكيد سداد رسوم تحرير الأرباح: ${current.liberationFee} ر.س`);
+    if (paidNum < currentNum) {
+      // Partial payment
+      const remainingNum = Math.max(0, currentNum - paidNum);
+      const formattedRemaining = remainingNum.toLocaleString("en-US");
+      const formattedPaid = paidNum.toLocaleString("en-US");
 
-    res.json(updated);
+      const [updated] = await db
+        .update(beneficiariesTable)
+        .set({ liberationFee: formattedRemaining, liberationFeeStatus: "partial", liberationFeePaidAt: paidAt })
+        .where(eq(beneficiariesTable.id, id))
+        .returning();
+
+      const message = `عزيزي العميل / ${current.name} 🚨 تم استلام دفعة سداد بمبلغ ${formattedPaid} ر.س لرسوم تحرير الأرباح ✅\n\nالمبلغ المتبقي المطلوب عليكم لاستكمال تحرير الأرباح هو ${formattedRemaining} ر.س.`;
+      await db.insert(notificationsTable).values({
+        beneficiaryId: id,
+        type: "liberation_fee_paid_partial",
+        title: "إشعار سداد جزئي - رسوم تحرير الأرباح",
+        message,
+        isRead: false,
+      });
+
+      await logTransaction(id, "pay_liberation_fee_partial", String(paidNum), `سداد جزئي لرسوم تحرير الأرباح: تم سداد ${formattedPaid} ر.س (المتبقي: ${formattedRemaining} ر.س)`);
+
+      res.json(updated);
+    } else {
+      // Full payment
+      const formattedPaid = currentNum.toLocaleString("en-US");
+      const [updated] = await db
+        .update(beneficiariesTable)
+        .set({ liberationFee: "0", liberationFeeStatus: "paid", liberationFeePaidAt: paidAt })
+        .where(eq(beneficiariesTable.id, id))
+        .returning();
+
+      const message = `عزيز العميل / ${current.name} 🚨 تم تأكيد سداد كامل رسوم تحرير الأرباح بنجاح ✅\n يرجى الإنتظار سوف يقوم النظام\n بتحرير الأرباح خلال أقل من 24 ساعة\nويتم تحرير أرباحك بنجاح ✅`;
+      await db.insert(notificationsTable).values({
+        beneficiaryId: id,
+        type: "liberation_fee_paid",
+        title: "تم تأكيد سداد رسوم تحرير الأرباح بالكامل",
+        message,
+        isRead: false,
+      });
+
+      await logTransaction(id, "pay_liberation_fee", String(currentNum), `تأكيد سداد رسوم تحرير الأرباح بالكامل: ${formattedPaid} ر.س`);
+
+      res.json(updated);
+    }
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "فشل تأكيد سداد رسوم التحرير" });
@@ -250,28 +324,65 @@ router.post("/beneficiaries/:id/add-transaction-fee", async (req, res): Promise<
 router.post("/beneficiaries/:id/pay-transaction-fee", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
+    const { paidAmount } = req.body as { paidAmount?: number | string };
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
     const paidAt = new Date();
-    const [updated] = await db
-      .update(beneficiariesTable)
-      .set({ transactionFeeStatus: "paid", transactionFeePaidAt: paidAt })
-      .where(eq(beneficiariesTable.id, id))
-      .returning();
+    const currentNum = parseFloat(String(current.transactionFee).replace(/,/g, "")) || 0;
+    const paidNum = paidAmount !== undefined && paidAmount !== null ? parseFloat(String(paidAmount).replace(/,/g, "")) : currentNum;
 
-    const message = `عزيز العميل / ${current.name} 🚨 تم تأكيد دفع معاملة تأكيد تحويل الأرباح بنجاح ✅\n يرجى الإنتظار سوف يقوم النظام\n بإتمام عملية سحب الأرباح  خلال أقل من 24 ساعة\nويتم سحب  أرباحك بنجاح ✅\nنشكر تفهمكم و تعاونكم معنا`;
-    await db.insert(notificationsTable).values({
-      beneficiaryId: id,
-      type: "transaction_fee_paid",
-      title: "تم تأكيد دفع مبلغ المعاملة",
-      message,
-      isRead: false,
-    });
+    if (isNaN(paidNum) || paidNum <= 0) {
+      res.status(400).json({ error: "يرجى إدخال مبلغ سداد صحيح" });
+      return;
+    }
 
-    await logTransaction(id, "pay_transaction_fee", current.transactionFee, `تأكيد سداد مبلغ المعاملة: ${current.transactionFee} ر.س`);
+    if (paidNum < currentNum) {
+      // Partial payment
+      const remainingNum = Math.max(0, currentNum - paidNum);
+      const formattedRemaining = remainingNum.toLocaleString("en-US");
+      const formattedPaid = paidNum.toLocaleString("en-US");
 
-    res.json(updated);
+      const [updated] = await db
+        .update(beneficiariesTable)
+        .set({ transactionFee: formattedRemaining, transactionFeeStatus: "partial", transactionFeePaidAt: paidAt })
+        .where(eq(beneficiariesTable.id, id))
+        .returning();
+
+      const message = `عزيزي العميل / ${current.name} 🚨 تم استلام دفعة سداد بمبلغ ${formattedPaid} ر.س لمبلغ المعاملة ✅\n\nالمبلغ المتبقي المطلوب لاستكمال تحويل الأرباح هو ${formattedRemaining} ر.س.`;
+      await db.insert(notificationsTable).values({
+        beneficiaryId: id,
+        type: "transaction_fee_paid_partial",
+        title: "إشعار سداد جزئي - مبلغ المعاملة",
+        message,
+        isRead: false,
+      });
+
+      await logTransaction(id, "pay_transaction_fee_partial", String(paidNum), `سداد جزئي لمبلغ المعاملة: تم سداد ${formattedPaid} ر.س (المتبقي: ${formattedRemaining} ر.س)`);
+
+      res.json(updated);
+    } else {
+      // Full payment
+      const formattedPaid = currentNum.toLocaleString("en-US");
+      const [updated] = await db
+        .update(beneficiariesTable)
+        .set({ transactionFee: "0", transactionFeeStatus: "paid", transactionFeePaidAt: paidAt })
+        .where(eq(beneficiariesTable.id, id))
+        .returning();
+
+      const message = `عزيز العميل / ${current.name} 🚨 تم تأكيد دفع كامل معاملة تأكيد تحويل الأرباح بنجاح ✅\n يرجى الإنتظار سوف يقوم النظام\n بإتمام عملية سحب الأرباح خلال أقل من 24 ساعة\nويتم سحب أرباحك بنجاح ✅\nنشكر تفهمكم و تعاونكم معنا`;
+      await db.insert(notificationsTable).values({
+        beneficiaryId: id,
+        type: "transaction_fee_paid",
+        title: "تم تأكيد دفع مبلغ المعاملة بالكامل",
+        message,
+        isRead: false,
+      });
+
+      await logTransaction(id, "pay_transaction_fee", String(currentNum), `تأكيد سداد مبلغ المعاملة بالكامل: ${formattedPaid} ر.س`);
+
+      res.json(updated);
+    }
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "فشل تأكيد سداد مبلغ المعاملة" });

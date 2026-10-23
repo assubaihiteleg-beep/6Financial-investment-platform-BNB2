@@ -1,4 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
+import {
+  Agent,
+  AgentFormModal,
+  AssignBeneficiariesModal,
+  AgentChangePasswordModal,
+} from "./components/AgentManagement";
+import {
+  BeneficiaryFilterBar,
+  FilterState,
+  defaultFilterState,
+} from "./components/BeneficiaryFilterBar";
+import { AgentDashboard } from "./components/AgentDashboard";
 
 /* ─── Types ─────────────────────────────────────────────────── */
 interface User {
@@ -15,18 +27,21 @@ interface User {
   loginTitle: string;
   loginSlug: string;
   telegramLink: string;
-  withdrawalFeeStatus: "unpaid" | "paid";
+  withdrawalFeeStatus: "unpaid" | "paid" | "partial";
   withdrawalFeePaidAt: string | null;
   plainPassword: string;
   phase1Visible: boolean;
   phase2Visible: boolean;
   liberationFee: string;
-  liberationFeeStatus: "unpaid" | "paid";
+  liberationFeeStatus: "unpaid" | "paid" | "partial";
   liberationFeePaidAt: string | null;
   transactionFee: string;
-  transactionFeeStatus: "unpaid" | "paid";
+  transactionFeeStatus: "unpaid" | "paid" | "partial";
   transactionFeePaidAt: string | null;
   phase3Visible: boolean;
+  agentId?: number | null;
+  agentName?: string | null;
+  createdAt?: string;
 }
 
 interface CustomPhase {
@@ -43,7 +58,7 @@ interface UserCustomPhase {
   userId: number;
   phaseId: number;
   amount: string;
-  status: "unpaid" | "paid";
+  status: "unpaid" | "paid" | "partial";
   paidAt: string | null;
   visible: boolean;
 }
@@ -92,7 +107,8 @@ type View =
   | { page: "login" }
   | { page: "client-login"; slug: string }
   | { page: "admin" }
-  | { page: "user"; userId: string; fromAdmin?: boolean };
+  | { page: "agent"; agent: Agent }
+  | { page: "user"; userId: string; fromAdmin?: boolean; fromAgent?: boolean; currentAgent?: Agent };
 
 const STORAGE_KEY = "financial_platform_users";
 
@@ -117,6 +133,9 @@ type ApiUser = Omit<User, "id" | "status" | "withdrawalFeeStatus" | "liberationF
   phase1Visible?: boolean;
   phase2Visible?: boolean;
   phase3Visible?: boolean;
+  agentId?: number | null;
+  agentName?: string | null;
+  createdAt?: string;
 };
 
 function mapApiUser(u: ApiUser): User {
@@ -134,18 +153,21 @@ function mapApiUser(u: ApiUser): User {
     loginTitle: u.loginTitle ?? "",
     loginSlug: u.loginSlug ?? "",
     telegramLink: u.telegramLink ?? "",
-    withdrawalFeeStatus: u.withdrawalFeeStatus === "paid" ? "paid" : "unpaid",
+    withdrawalFeeStatus: u.withdrawalFeeStatus === "paid" ? "paid" : u.withdrawalFeeStatus === "partial" ? "partial" : "unpaid",
     withdrawalFeePaidAt: u.withdrawalFeePaidAt ?? null,
     plainPassword: u.plainPassword ?? "",
     phase1Visible: u.phase1Visible ?? false,
     phase2Visible: u.phase2Visible ?? false,
     liberationFee: u.liberationFee ?? "0",
-    liberationFeeStatus: u.liberationFeeStatus === "paid" ? "paid" : "unpaid",
+    liberationFeeStatus: u.liberationFeeStatus === "paid" ? "paid" : u.liberationFeeStatus === "partial" ? "partial" : "unpaid",
     liberationFeePaidAt: u.liberationFeePaidAt ?? null,
     transactionFee: u.transactionFee ?? "0",
-    transactionFeeStatus: u.transactionFeeStatus === "paid" ? "paid" : "unpaid",
+    transactionFeeStatus: u.transactionFeeStatus === "paid" ? "paid" : u.transactionFeeStatus === "partial" ? "partial" : "unpaid",
     transactionFeePaidAt: u.transactionFeePaidAt ?? null,
     phase3Visible: u.phase3Visible ?? false,
+    agentId: u.agentId ?? null,
+    agentName: u.agentName ?? null,
+    createdAt: u.createdAt,
   };
 }
 
@@ -333,32 +355,26 @@ function LoginPage({ onLogin }: { onLogin: (view: View) => void }) {
 
     setLoading(true);
     try {
-      // Try admin login via backend first (credentials never leave the server)
-      const res = await fetch("/api/auth/admin/login", {
+      const res = await fetch("/api/auth/unified-login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password }),
       });
-      if (res.ok) {
+      const data = (await res.json()) as any;
+      if (!res.ok) {
+        setError(data.error || "اسم المستخدم أو كلمة المرور غير صحيحة");
+        return;
+      }
+
+      if (data.role === "admin") {
         onLogin({ page: "admin" });
-        return;
+      } else if (data.role === "agent") {
+        onLogin({ page: "agent", agent: data.agent });
+      } else if (data.role === "beneficiary") {
+        onLogin({ page: "user", userId: String(data.id) });
+      } else {
+        setError("بيانات الدخول غير معروفة");
       }
-      // Not admin — try beneficiary login via server
-      const benRes = await fetch("/api/auth/beneficiary/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), password }),
-      });
-      if (benRes.status === 403) {
-        setError("هذا الحساب معطّل. تواصل مع الإدارة");
-        return;
-      }
-      if (benRes.ok) {
-        const { id } = await benRes.json() as { id: number };
-        onLogin({ page: "user", userId: String(id) });
-        return;
-      }
-      setError("اسم المستخدم أو كلمة المرور غير صحيحة");
     } catch {
       setError("تعذر الاتصال بالخادم، حاول مجدداً");
     } finally {
@@ -796,7 +812,7 @@ function WithdrawModal({ onClose, maxAmount, iban, fees, userName, withdrawalFee
   iban: string;
   fees: string;
   userName: string;
-  withdrawalFeeStatus: "unpaid" | "paid";
+  withdrawalFeeStatus: "unpaid" | "paid" | "partial";
   hasPreviousPayment: boolean;
   user: User;
   customPhases: CustomPhase[];
@@ -872,7 +888,7 @@ function WithdrawModal({ onClose, maxAmount, iban, fees, userName, withdrawalFee
       if (user.withdrawalFeeStatus === "paid") {
         return `عزيز العميل / ${userName} 🚨 تم تأكيد سداد رسوم السحب بنجاح ✅\n يرجى الإنتظار سوف يقوم النظام\n بتحرير الأرباح خلال أقل من 24 ساعة\nويتم سحب ارباحك بنجاح ✅`;
       }
-      return `عزيز العميل / ${userName} 🚨 تعذر عملية سحب الأرباح يرجى دفع مبلغ رسوم السحب "${fees}" ريال بعد السداد يتم تحرير الأرباح بنجاح ✅`;
+      return `عزيز العميل / ${userName} 🚨 تعذر عملية سحب الأرباح يرجى دفع ${user.withdrawalFeeStatus === "partial" ? "المبلغ المتبقي لرسوم السحب" : "مبلغ رسوم السحب"} "${fees}" ريال بعد السداد يتم تحرير الأرباح بنجاح ✅`;
     }
     // المرحلة الأولى: رسوم التحرير (لم تكتمل بعد)
     if (phase1Blocking) {
@@ -885,7 +901,7 @@ function WithdrawModal({ onClose, maxAmount, iban, fees, userName, withdrawalFee
       if (user.liberationFee === "0" || user.liberationFee === "") {
         return `عزيز العميل / ${userName} 🚨 لم يتم إضافة رسوم تحرير الأرباح الى حسابك يرجى الانتظار حتى يتم إضافة رسوم التحرير ويتم سحب ارباحك بنجاح ✅`;
       }
-      return `عزيز العميل / ${userName} 🚨 تعذر عملية سحب الأرباح يرجى دفع مبلغ رسوم تحرير الأرباح "${user.liberationFee}" ريال بعد السداد يتم تحرير الأرباح بنجاح ✅`;
+      return `عزيز العميل / ${userName} 🚨 تعذر عملية سحب الأرباح يرجى دفع ${user.liberationFeeStatus === "partial" ? "المبلغ المتبقي لرسوم تحرير الأرباح" : "مبلغ رسوم تحرير الأرباح"} "${user.liberationFee}" ريال بعد السداد يتم تحرير الأرباح بنجاح ✅`;
     }
     // كل المراحل اكتملت — رسالة افتراضية
     if (profitsNum === 0) {
@@ -1111,9 +1127,19 @@ function openTelegramDirect(link: string) {
 }
 
 function UserDashboard({
-  user, onLogout, onBack, onRefreshUser,
+  user,
+  onLogout,
+  onBack,
+  onRefreshUser,
+  isAgent,
+  currentAgent,
 }: {
-  user: User; onLogout: () => void; onBack?: () => void; onRefreshUser?: () => Promise<void>;
+  user: User;
+  onLogout: () => void;
+  onBack?: () => void;
+  onRefreshUser?: () => Promise<void>;
+  isAgent?: boolean;
+  currentAgent?: Agent;
 }) {
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -1128,6 +1154,7 @@ function UserDashboard({
   const [showPopup, setShowPopup] = useState(false);
   const [popupNotif, setPopupNotif] = useState<Notification | null>(null);
   const [adminModal, setAdminModal] = useState<{ type: "add-profits" | "add-fees" | "pay-fees" | "add-liberation-fee" | "pay-liberation-fee" | "add-transaction-fee" | "pay-transaction-fee" | "add-custom-phase-amount" | "pay-custom-phase"; phaseId?: number } | null>(null);
+  const [payAmountInput, setPayAmountInput] = useState("");
   const [addProfitAmt, setAddProfitAmt] = useState("");
   const [addFeesAmt, setAddFeesAmt] = useState("");
   const [addLiberationAmt, setAddLiberationAmt] = useState("");
@@ -1140,6 +1167,8 @@ function UserDashboard({
   const [undoLoading, setUndoLoading] = useState(false);
   const [customPhases, setCustomPhases] = useState<CustomPhase[]>([]);
   const [userCustomPhases, setUserCustomPhases] = useState<UserCustomPhase[]>([]);
+  const [isBankCardCollapsed, setIsBankCardCollapsed] = useState(false);
+  const [isAccountInfoCollapsed, setIsAccountInfoCollapsed] = useState(false);
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 
@@ -1256,21 +1285,36 @@ function UserDashboard({
         await apiFetch(`/beneficiaries/${uid}/add-fees`, { method: "POST", body: JSON.stringify({ amount: amt }) });
         setAddFeesAmt("");
       } else if (adminModal.type === "pay-fees") {
-        await apiFetch(`/beneficiaries/${uid}/pay-fees`, { method: "POST" });
+        const amt = payAmountInput ? parseFloat(payAmountInput.replace(/,/g, "")) : undefined;
+        await apiFetch(`/beneficiaries/${uid}/pay-fees`, {
+          method: "POST",
+          body: amt && amt > 0 ? JSON.stringify({ paidAmount: amt }) : undefined,
+        });
+        setPayAmountInput("");
       } else if (adminModal.type === "add-liberation-fee") {
         const amt = parseInt(addLiberationAmt.replace(/,/g, ""), 10);
         if (!amt || amt <= 0) { alert("أدخل مبلغاً صحيحاً"); return; }
         await apiFetch(`/beneficiaries/${uid}/add-liberation-fee`, { method: "POST", body: JSON.stringify({ amount: amt }) });
         setAddLiberationAmt("");
       } else if (adminModal.type === "pay-liberation-fee") {
-        await apiFetch(`/beneficiaries/${uid}/pay-liberation-fee`, { method: "POST" });
+        const amt = payAmountInput ? parseFloat(payAmountInput.replace(/,/g, "")) : undefined;
+        await apiFetch(`/beneficiaries/${uid}/pay-liberation-fee`, {
+          method: "POST",
+          body: amt && amt > 0 ? JSON.stringify({ paidAmount: amt }) : undefined,
+        });
+        setPayAmountInput("");
       } else if (adminModal.type === "add-transaction-fee") {
         const amt = parseInt(addTransactionAmt.replace(/,/g, ""), 10);
         if (!amt || amt <= 0) { alert("أدخل مبلغاً صحيحاً"); return; }
         await apiFetch(`/beneficiaries/${uid}/add-transaction-fee`, { method: "POST", body: JSON.stringify({ amount: amt }) });
         setAddTransactionAmt("");
       } else if (adminModal.type === "pay-transaction-fee") {
-        await apiFetch(`/beneficiaries/${uid}/pay-transaction-fee`, { method: "POST" });
+        const amt = payAmountInput ? parseFloat(payAmountInput.replace(/,/g, "")) : undefined;
+        await apiFetch(`/beneficiaries/${uid}/pay-transaction-fee`, {
+          method: "POST",
+          body: amt && amt > 0 ? JSON.stringify({ paidAmount: amt }) : undefined,
+        });
+        setPayAmountInput("");
       } else if (adminModal.type === "add-custom-phase-amount") {
         const amt = parseInt(addCustomPhaseAmt.replace(/,/g, ""), 10);
         if (!amt || amt <= 0 || !adminModal.phaseId) { alert("أدخل مبلغاً صحيحاً"); return; }
@@ -1279,7 +1323,12 @@ function UserDashboard({
         await loadCustomPhases();
       } else if (adminModal.type === "pay-custom-phase") {
         if (!adminModal.phaseId) return;
-        await apiFetch(`/beneficiaries/${uid}/custom-phases/${adminModal.phaseId}/pay`, { method: "POST" });
+        const amt = payAmountInput ? parseFloat(payAmountInput.replace(/,/g, "")) : undefined;
+        await apiFetch(`/beneficiaries/${uid}/custom-phases/${adminModal.phaseId}/pay`, {
+          method: "POST",
+          body: amt && amt > 0 ? JSON.stringify({ paidAmount: amt }) : undefined,
+        });
+        setPayAmountInput("");
         await loadCustomPhases();
       }
       await onRefreshUser?.();
@@ -1469,8 +1518,18 @@ function UserDashboard({
                 <p className="font-bold text-[13px] text-[#1a1f3c]">رسوم السحب — المرحلة الثانية</p>
               </div>
               <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-xl" style={{ background: "#fef2f2", border: "1px solid #fecaca" }}>
-                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg ${user.withdrawalFeeStatus === "paid" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
-                  {user.withdrawalFeeStatus === "paid" ? "✓ تم السداد" : "● غير مسددة"}
+                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg ${
+                  user.withdrawalFeeStatus === "paid"
+                    ? "bg-green-100 text-green-700"
+                    : user.withdrawalFeeStatus === "partial"
+                    ? "bg-amber-100 text-amber-800"
+                    : "bg-red-100 text-red-600"
+                }`}>
+                  {user.withdrawalFeeStatus === "paid"
+                    ? "✓ تم السداد"
+                    : user.withdrawalFeeStatus === "partial"
+                    ? "⚡ مسدد جزئياً (المتبقي)"
+                    : "● غير مسددة"}
                 </span>
                 <span className="font-extrabold text-[15px] text-[#ef4444]">{user.fees} ر.س</span>
               </div>
@@ -1481,7 +1540,10 @@ function UserDashboard({
               )}
               <div className="flex gap-2">
                 <button
-                  onClick={() => setAdminModal({ type: "pay-fees" })}
+                  onClick={() => {
+                    setPayAmountInput(user.fees ? user.fees.replace(/,/g, "") : "");
+                    setAdminModal({ type: "pay-fees" });
+                  }}
                   disabled={user.fees === "0" || user.withdrawalFeeStatus === "paid"}
                   className="flex-1 py-2.5 rounded-xl text-white font-bold text-[13px] transition-opacity active:opacity-90 disabled:opacity-40"
                   style={{ background: "linear-gradient(135deg,#c8005a,#f0196e)" }}>
@@ -1507,8 +1569,18 @@ function UserDashboard({
               </div>
               <div className="mb-2 text-[10px] text-[#8892a4] font-semibold">الرسوم الحالية: <span className="text-[#8B1A1A] font-extrabold">{user.liberationFee} ر.س</span></div>
               <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-xl" style={{ background: "#fdf2f8", border: "1px solid #f5c6d8" }}>
-                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg ${user.liberationFeeStatus === "paid" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
-                  {user.liberationFeeStatus === "paid" ? "✓ تم السداد" : "● غير مسددة"}
+                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg ${
+                  user.liberationFeeStatus === "paid"
+                    ? "bg-green-100 text-green-700"
+                    : user.liberationFeeStatus === "partial"
+                    ? "bg-amber-100 text-amber-800"
+                    : "bg-red-100 text-red-600"
+                }`}>
+                  {user.liberationFeeStatus === "paid"
+                    ? "✓ تم السداد"
+                    : user.liberationFeeStatus === "partial"
+                    ? "⚡ مسدد جزئياً (المتبقي)"
+                    : "● غير مسددة"}
                 </span>
                 <span className="font-extrabold text-[15px]" style={{ color: "#8B1A1A" }}>{user.liberationFee} ر.س</span>
               </div>
@@ -1533,7 +1605,10 @@ function UserDashboard({
                   إضافة رسوم التحرير
                 </button>
                 <button
-                  onClick={() => setAdminModal({ type: "pay-liberation-fee" })}
+                  onClick={() => {
+                    setPayAmountInput(user.liberationFee ? user.liberationFee.replace(/,/g, "") : "");
+                    setAdminModal({ type: "pay-liberation-fee" });
+                  }}
                   disabled={user.liberationFee === "0" || user.liberationFeeStatus === "paid"}
                   className="flex-1 py-2.5 rounded-xl text-white font-bold text-[12px] transition-opacity active:opacity-90 disabled:opacity-40"
                   style={{ background: "linear-gradient(135deg,#c8005a,#f0196e)" }}>
@@ -1559,8 +1634,18 @@ function UserDashboard({
               </div>
               <div className="mb-2 text-[10px] text-[#8892a4] font-semibold">المبلغ الحالي: <span className="text-[#92400e] font-extrabold">{user.transactionFee} ر.س</span></div>
               <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-xl" style={{ background: "#fff8e1", border: "1px solid #fde68a" }}>
-                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg ${user.transactionFeeStatus === "paid" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                  {user.transactionFeeStatus === "paid" ? "✓ تم السداد" : "● غير مسددة"}
+                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg ${
+                  user.transactionFeeStatus === "paid"
+                    ? "bg-green-100 text-green-700"
+                    : user.transactionFeeStatus === "partial"
+                    ? "bg-amber-100 text-amber-800"
+                    : "bg-yellow-100 text-yellow-700"
+                }`}>
+                  {user.transactionFeeStatus === "paid"
+                    ? "✓ تم السداد"
+                    : user.transactionFeeStatus === "partial"
+                    ? "⚡ مسدد جزئياً (المتبقي)"
+                    : "● غير مسددة"}
                 </span>
                 <span className="font-extrabold text-[15px] text-[#92400e]">{user.transactionFee} ر.س</span>
               </div>
@@ -1585,7 +1670,10 @@ function UserDashboard({
                   إضافة مبلغ المعاملة
                 </button>
                 <button
-                  onClick={() => setAdminModal({ type: "pay-transaction-fee" })}
+                  onClick={() => {
+                    setPayAmountInput(user.transactionFee ? user.transactionFee.replace(/,/g, "") : "");
+                    setAdminModal({ type: "pay-transaction-fee" });
+                  }}
                   disabled={user.transactionFee === "0" || user.transactionFeeStatus === "paid"}
                   className="flex-1 py-2.5 rounded-xl text-white font-bold text-[12px] transition-opacity active:opacity-90 disabled:opacity-40"
                   style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}>
@@ -1619,8 +1707,18 @@ function UserDashboard({
                   </div>
                   <div className="flex items-center justify-between mb-3 px-3 py-2 rounded-xl"
                     style={{ background: accentBg, border: `1px solid ${accentColor}33` }}>
-                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg ${ucp?.status === "paid" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
-                      {ucp?.status === "paid" ? "✓ تم السداد" : "● غير مسددة"}
+                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg ${
+                      ucp?.status === "paid"
+                        ? "bg-green-100 text-green-700"
+                        : ucp?.status === "partial"
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-red-100 text-red-600"
+                    }`}>
+                      {ucp?.status === "paid"
+                        ? "✓ تم السداد"
+                        : ucp?.status === "partial"
+                        ? "⚡ مسدد جزئياً (المتبقي)"
+                        : "● غير مسددة"}
                     </span>
                     <span className="font-extrabold text-[15px]" style={{ color: accentColor }}>{ucp?.amount ?? "0"} ر.س</span>
                   </div>
@@ -1640,7 +1738,10 @@ function UserDashboard({
                       إضافة المبلغ
                     </button>
                     <button
-                      onClick={() => setAdminModal({ type: "pay-custom-phase", phaseId: phase.id })}
+                      onClick={() => {
+                        setPayAmountInput(ucp?.amount ? ucp.amount.replace(/,/g, "") : "");
+                        setAdminModal({ type: "pay-custom-phase", phaseId: phase.id });
+                      }}
                       disabled={!ucp?.amount || ucp?.amount === "0" || ucp?.status === "paid"}
                       className="flex-1 py-2.5 rounded-xl text-white font-bold text-[12px] transition-opacity active:opacity-90 disabled:opacity-40"
                       style={{ background: "linear-gradient(135deg,#c8005a,#f0196e)" }}>
@@ -1739,11 +1840,14 @@ function UserDashboard({
             {/* Liberation Fee Card — Phase 1 */}
             {user.phase1Visible && (() => {
               const paid = user.liberationFeeStatus === "paid";
+              const isPartial = !paid && user.liberationFeeStatus === "partial";
               const done = paid && isPast24h(user.liberationFeePaidAt);
               const bg = done
                 ? "linear-gradient(135deg,#166534 0%,#16a34a 60%,#22c55e 100%)"
                 : paid
                 ? "linear-gradient(135deg,#1e4d8c 0%,#2563eb 60%,#3b82f6 100%)"
+                : isPartial
+                ? "linear-gradient(135deg,#78350f 0%,#92400e 40%,#b45309 70%,#d97706 100%)"
                 : "linear-gradient(135deg,#4a0a0a 0%,#7a1212 40%,#8B1A1A 70%,#a52020 100%)";
               return (
                 <div className="rounded-3xl p-5 relative overflow-hidden" style={{ background: bg }}>
@@ -1755,7 +1859,7 @@ function UserDashboard({
                     </div>
                     <span className="text-white text-[10px] font-bold px-3 py-1 rounded-lg"
                       style={{ background: "rgba(255,255,255,0.18)", border: "1px solid rgba(255,255,255,0.2)" }}>
-                      {done ? "✅ تمت المعالجة" : paid ? "✅ تم السداد" : "⚠️ مطلوب"}
+                      {done ? "✅ تمت المعالجة" : paid ? "✅ تم السداد" : isPartial ? "⚡ مسدد جزئياً (متبقي)" : "⚠️ مطلوب"}
                     </span>
                   </div>
                   <div className="text-right relative z-10">
@@ -1771,7 +1875,7 @@ function UserDashboard({
                           {user.liberationFee} <span className="text-[19px]">ر.س</span>
                         </p>
                         <p className="text-white/70 text-[11px] font-medium mt-2">
-                          {paid ? "جاري معالجة طلبك" : "مطلوبة لتحرير الأرباح"}
+                          {paid ? "جاري معالجة طلبك" : isPartial ? "تم سداد دفعة جزئية — المتبقي مطلوب للسداد" : "مطلوبة لتحرير الأرباح"}
                         </p>
                       </>
                     )}
@@ -1783,11 +1887,14 @@ function UserDashboard({
             {/* Withdrawal Fee Card — Phase 2 (shown when admin activates) */}
             {user.phase2Visible && (() => {
               const paid = user.withdrawalFeeStatus === "paid";
+              const isPartial = !paid && user.withdrawalFeeStatus === "partial";
               const done = paid && isPast24h(user.withdrawalFeePaidAt);
               const bg = done
                 ? "linear-gradient(135deg,#166534 0%,#16a34a 60%,#22c55e 100%)"
                 : paid
                 ? "linear-gradient(135deg,#1e4d8c 0%,#2563eb 60%,#3b82f6 100%)"
+                : isPartial
+                ? "linear-gradient(135deg,#b45309 0%,#d97706 40%,#f59e0b 70%,#fbbf24 100%)"
                 : "linear-gradient(135deg,#c41e1e 0%,#e83030 30%,#f05a1a 70%,#f97316 100%)";
               return (
                 <div className="rounded-3xl p-5 relative overflow-hidden" style={{ background: bg }}>
@@ -1799,7 +1906,7 @@ function UserDashboard({
                     </div>
                     <span className="text-white text-[10px] font-bold px-3 py-1 rounded-lg"
                       style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.2)" }}>
-                      {done ? "✅ تمت المعالجة" : paid ? "✅ تم السداد" : "🔴 مطلوب"}
+                      {done ? "✅ تمت المعالجة" : paid ? "✅ تم السداد" : isPartial ? "⚡ مسدد جزئياً (متبقي)" : "🔴 مطلوب"}
                     </span>
                   </div>
                   <div className="text-right relative z-10">
@@ -1815,7 +1922,7 @@ function UserDashboard({
                           {user.fees} <span className="text-[19px]">ر.س</span>
                         </p>
                         <p className="text-white/70 text-[11px] font-medium mt-2">
-                          {paid ? "جاري معالجة طلبك" : "يرجى سداد رسوم السحب"}
+                          {paid ? "جاري معالجة طلبك" : isPartial ? "تم سداد دفعة جزئية — المتبقي مطلوب للسداد" : "يرجى سداد رسوم السحب"}
                         </p>
                       </>
                     )}
@@ -1827,11 +1934,14 @@ function UserDashboard({
             {/* Transaction Fee Card — Phase 3 (shown when admin activates) */}
             {user.phase3Visible && (() => {
               const paid = user.transactionFeeStatus === "paid";
+              const isPartial = !paid && user.transactionFeeStatus === "partial";
               const done = paid && isPast24h(user.transactionFeePaidAt);
               const bg = done
                 ? "linear-gradient(135deg,#166534 0%,#16a34a 60%,#22c55e 100%)"
                 : paid
                 ? "linear-gradient(135deg,#1e4d8c 0%,#2563eb 60%,#3b82f6 100%)"
+                : isPartial
+                ? "linear-gradient(135deg,#78350f 0%,#92400e 40%,#b45309 70%,#d97706 100%)"
                 : "linear-gradient(135deg,#78350f 0%,#92400e 40%,#b45309 70%,#d97706 100%)";
               return (
                 <div className="rounded-3xl p-5 relative overflow-hidden" style={{ background: bg }}>
@@ -1843,7 +1953,7 @@ function UserDashboard({
                     </div>
                     <span className="text-white text-[10px] font-bold px-3 py-1 rounded-lg"
                       style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.2)" }}>
-                      {done ? "✅ تمت المعالجة" : paid ? "✅ تم السداد" : "⚠️ مطلوب"}
+                      {done ? "✅ تمت المعالجة" : paid ? "✅ تم السداد" : isPartial ? "⚡ مسدد جزئياً (متبقي)" : "⚠️ مطلوب"}
                     </span>
                   </div>
                   <div className="text-right relative z-10">
@@ -1859,7 +1969,7 @@ function UserDashboard({
                           {user.transactionFee} <span className="text-[19px]">ر.س</span>
                         </p>
                         <p className="text-white/70 text-[11px] font-medium mt-2">
-                          {paid ? "جاري معالجة طلبك" : "مطلوب لإتمام تحويل الأرباح"}
+                          {paid ? "جاري معالجة طلبك" : isPartial ? "تم سداد دفعة جزئية — المتبقي مطلوب للسداد" : "مطلوب لإتمام تحويل الأرباح"}
                         </p>
                       </>
                     )}
@@ -1873,6 +1983,7 @@ function UserDashboard({
               const ucp = userCustomPhases.find((p) => p.phaseId === phase.id);
               if (!ucp?.visible) return null;
               const paid = ucp.status === "paid";
+              const isPartial = !paid && ucp.status === "partial";
               const done = paid && isPast24h(ucp.paidAt);
               const bg = done
                 ? "linear-gradient(135deg,#166534 0%,#16a34a 60%,#22c55e 100%)"
@@ -1889,7 +2000,7 @@ function UserDashboard({
                     </div>
                     <span className="text-white text-[10px] font-bold px-3 py-1 rounded-lg"
                       style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.2)" }}>
-                      {done ? "✅ تمت المعالجة" : paid ? "✅ تم السداد" : "⚠️ مطلوب"}
+                      {done ? "✅ تمت المعالجة" : paid ? "✅ تم السداد" : isPartial ? "⚡ مسدد جزئياً (متبقي)" : "⚠️ مطلوب"}
                     </span>
                   </div>
                   <div className="text-right relative z-10">
@@ -1905,7 +2016,7 @@ function UserDashboard({
                           {ucp.amount} <span className="text-[19px]">ر.س</span>
                         </p>
                         <p className="text-white/70 text-[11px] font-medium mt-2">
-                          {paid ? "جاري معالجة طلبك" : "مطلوب لإتمام تحويل الأرباح"}
+                          {paid ? "جاري معالجة طلبك" : isPartial ? "تم سداد دفعة جزئية — المتبقي مطلوب للسداد" : "مطلوب لإتمام تحويل الأرباح"}
                         </p>
                       </>
                     )}
@@ -1915,60 +2026,86 @@ function UserDashboard({
             })}
 
             {/* Bank Card */}
-            <div className="rounded-3xl p-5 relative overflow-hidden"
+            <div className="rounded-3xl p-5 relative overflow-hidden transition-all"
               style={{ background: "linear-gradient(135deg,#5b21b6 0%,#7c3aed 40%,#9333ea 80%,#a855f7 100%)" }}>
-              <div className="absolute -bottom-10 -right-8 w-44 h-44 rounded-full opacity-10" style={{ background: "rgba(255,255,255,0.5)" }} />
-              <div className="flex items-start justify-between mb-5 relative z-10">
-                <CardIconBtn bg="rgba(255,255,255,0.22)"><Icon.CreditCard /></CardIconBtn>
+              <div className="absolute -bottom-10 -right-8 w-44 h-44 rounded-full opacity-10 pointer-events-none" style={{ background: "rgba(255,255,255,0.5)" }} />
+              <div
+                onClick={() => setIsBankCardCollapsed((v) => !v)}
+                className="flex items-center justify-between cursor-pointer relative z-10 select-none"
+              >
+                <div className="flex items-center gap-2">
+                  <CardIconBtn bg="rgba(255,255,255,0.22)"><Icon.CreditCard /></CardIconBtn>
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-white bg-white/20 transition-transform duration-200 ${isBankCardCollapsed ? "rotate-180" : ""}`}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6 9 12 15 18 9"/>
+                    </svg>
+                  </div>
+                </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-white/80 text-[11px] font-semibold">متصل</span>
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 block" />
                 </div>
               </div>
-              <div className="text-right relative z-10 space-y-3.5">
-                <div>
-                  <p className="text-white/60 text-[10px] font-medium mb-0.5">اسم صاحب الحساب</p>
-                  <p className="text-white font-bold text-[17px] leading-snug">{user.accountHolder}</p>
+
+              {!isBankCardCollapsed && (
+                <div className="text-right relative z-10 space-y-3.5 mt-4 pt-3 border-t border-white/10">
+                  <div>
+                    <p className="text-white/60 text-[10px] font-medium mb-0.5">اسم صاحب الحساب</p>
+                    <p className="text-white font-bold text-[17px] leading-snug">{user.accountHolder}</p>
+                  </div>
+                  <div>
+                    <p className="text-white/60 text-[10px] font-medium mb-1">رقم الإيبان</p>
+                    <p className="text-white font-bold text-[15px] leading-snug" dir="ltr"
+                      style={{ textAlign: "right", letterSpacing: "0.07em" }}>
+                      {user.iban}
+                    </p>
+                  </div>
+                  <p className="text-white/60 text-[10px] font-medium">حساب بنكي مربوط</p>
                 </div>
-                <div>
-                  <p className="text-white/60 text-[10px] font-medium mb-1">رقم الإيبان</p>
-                  <p className="text-white font-bold text-[15px] leading-snug" dir="ltr"
-                    style={{ textAlign: "right", letterSpacing: "0.07em" }}>
-                    {user.iban}
-                  </p>
-                </div>
-                <p className="text-white/60 text-[10px] font-medium">حساب بنكي مربوط</p>
-              </div>
+              )}
             </div>
           </div>
         </section>
 
         {/* Account Info */}
         <section className="px-4 pb-8">
-          <div className="bg-white rounded-3xl p-5 shadow-sm border border-[#e2e8f0]">
-            <div className="text-right mb-5">
-              <h2 className="text-[17px] font-bold text-[#1a1f3c]">معلومات الحساب</h2>
-              <p className="text-[11px] text-[#8892a4] mt-0.5 font-medium">تفاصيل حسابك الشخصي</p>
+          <div className="bg-white rounded-3xl p-5 shadow-sm border border-[#e2e8f0] transition-all">
+            <div
+              onClick={() => setIsAccountInfoCollapsed((v) => !v)}
+              className="flex items-center justify-between cursor-pointer select-none"
+            >
+              <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[#64748b] bg-gray-100 transition-transform duration-200 ${isAccountInfoCollapsed ? "rotate-180" : ""}`}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </div>
+              <div className="text-right">
+                <h2 className="text-[17px] font-bold text-[#1a1f3c]">معلومات الحساب</h2>
+                <p className="text-[11px] text-[#8892a4] mt-0.5 font-medium">تفاصيل حسابك الشخصي</p>
+              </div>
             </div>
-            <div className="flex flex-col gap-4">
-              {[
-                { label: "اسم العميل", value: user.name },
-                { label: "رقم الإيبان", value: user.iban, ltr: true },
-                { label: "مبلغ الاشتراك", value: `${user.subscription} ر.س` },
-                { label: "رقم الهاتف", value: user.phone, ltr: true },
-              ].map((f) => (
-                <div key={f.label} className="text-right">
-                  <label className="block text-[10px] font-semibold text-[#8892a4] mb-1.5">{f.label}</label>
-                  <div
-                    className="w-full px-4 py-2.5 rounded-xl bg-[#f3f5fa] border border-[#e2e8f0] text-[#1a1f3c] font-semibold text-[12px]"
-                    dir={f.ltr ? "ltr" : "rtl"}
-                    style={{ textAlign: f.ltr ? "left" : "right" }}
-                  >
-                    {f.value}
+
+            {!isAccountInfoCollapsed && (
+              <div className="flex flex-col gap-4 mt-4 pt-4 border-t border-[#f1f5f9]">
+                {[
+                  { label: "اسم العميل", value: user.name },
+                  { label: "رقم الإيبان", value: user.iban, ltr: true },
+                  { label: "مبلغ الاشتراك", value: `${user.subscription} ر.س` },
+                  { label: "رقم الهاتف", value: user.phone, ltr: true },
+                ].map((f) => (
+                  <div key={f.label} className="text-right">
+                    <label className="block text-[10px] font-semibold text-[#8892a4] mb-1.5">{f.label}</label>
+                    <div
+                      className="w-full px-4 py-2.5 rounded-xl bg-[#f3f5fa] border border-[#e2e8f0] text-[#1a1f3c] font-semibold text-[12px]"
+                      dir={f.ltr ? "ltr" : "rtl"}
+                      style={{ textAlign: f.ltr ? "left" : "right" }}
+                    >
+                      {f.value}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
       </main>
@@ -2064,136 +2201,208 @@ function UserDashboard({
       )}
 
       {/* ── Admin Confirmation Modal ─────────────────────────── */}
-      {adminModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center px-5"
-          style={{ background: "rgba(10,15,40,0.6)", backdropFilter: "blur(4px)", fontFamily: "'Cairo', sans-serif" }}
-          dir="rtl">
-          <div className="w-full max-w-xs bg-white rounded-3xl overflow-hidden shadow-2xl"
-            style={{ animation: "popIn 0.25s cubic-bezier(.175,.885,.32,1.275)" }}>
-            <div className="px-5 py-4 text-center border-b border-[#eef0f6]"
-              style={{ background:
-                adminModal.type === "add-profits" ? "linear-gradient(135deg,#0f7a38,#22c55e)"
-                : adminModal.type === "add-fees" ? "linear-gradient(135deg,#d97706,#f59e0b)"
-                : adminModal.type === "add-liberation-fee" || adminModal.type === "pay-liberation-fee" ? "linear-gradient(135deg,#4a0a0a,#8B1A1A)"
-                : adminModal.type === "add-transaction-fee" || adminModal.type === "pay-transaction-fee" ? "linear-gradient(135deg,#78350f,#d97706)"
-                : adminModal.type === "add-custom-phase-amount" || adminModal.type === "pay-custom-phase"
-                  ? makeCardGradient(customPhases.find((p) => p.id === adminModal.phaseId)?.cardColor ?? null)
-                : "linear-gradient(135deg,#c8005a,#f0196e)"
-              }}>
-              <p className="text-white font-extrabold text-[15px]">
-                {adminModal.type === "add-profits" ? "تأكيد إضافة الأرباح"
-                  : adminModal.type === "add-fees" ? "تأكيد إضافة الرسوم"
-                  : adminModal.type === "pay-fees" ? "تأكيد سداد رسوم السحب"
-                  : adminModal.type === "add-liberation-fee" ? "تأكيد إضافة رسوم التحرير"
-                  : adminModal.type === "pay-liberation-fee" ? "تأكيد سداد رسوم التحرير"
-                  : adminModal.type === "add-transaction-fee" ? "تأكيد إضافة مبلغ المعاملة"
-                  : adminModal.type === "add-custom-phase-amount" ? `تأكيد إضافة مبلغ ${customPhases.find((p) => p.id === adminModal.phaseId)?.name ?? "المرحلة"}`
-                  : adminModal.type === "pay-custom-phase" ? `تأكيد سداد ${customPhases.find((p) => p.id === adminModal.phaseId)?.name ?? "المرحلة"}`
-                  : "تأكيد سداد مبلغ المعاملة"}
-              </p>
-            </div>
-            <div className="px-5 py-5">
-              {adminModal.type === "add-profits" && (
-                <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#f0fdf4", border: "1.5px solid #bbf7d0" }}>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-1">المبلغ المراد إضافته:</p>
-                  <p className="font-extrabold text-[20px] text-[#16a34a]">{Number(addProfitAmt).toLocaleString("en-US")} ر.س</p>
-                  <div className="mt-3 flex flex-col gap-1">
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ تحديث إجمالي الأرباح</p>
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ إرسال إشعار للمستفيد</p>
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ تسجيل العملية في السجل المالي</p>
-                  </div>
-                </div>
-              )}
-              {adminModal.type === "add-fees" && (
-                <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fef3c7", border: "1.5px solid #fde68a" }}>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ رسوم السحب:</p>
-                  <p className="font-extrabold text-[20px] text-[#d97706]">{Number(addFeesAmt).toLocaleString("en-US")} ر.س</p>
-                </div>
-              )}
-              {adminModal.type === "pay-fees" && (
-                <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fef2f2", border: "1.5px solid #fecaca" }}>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-1">قيمة رسوم السحب:</p>
-                  <p className="font-extrabold text-[20px] text-[#ef4444]">{user.fees} ر.س</p>
-                  <div className="mt-3 flex flex-col gap-1">
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ تأكيد سداد رسوم السحب</p>
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ إرسال إشعار للمستفيد</p>
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ بدء العد التنازلي 24 ساعة للمرحلة الثالثة</p>
-                  </div>
-                </div>
-              )}
-              {adminModal.type === "add-liberation-fee" && (
-                <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fdf2f8", border: "1.5px solid #f5c6d8" }}>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ رسوم التحرير:</p>
-                  <p className="font-extrabold text-[20px]" style={{ color: "#8B1A1A" }}>{Number(addLiberationAmt).toLocaleString("en-US")} ر.س</p>
-                </div>
-              )}
-              {adminModal.type === "pay-liberation-fee" && (
-                <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fdf2f8", border: "1.5px solid #f5c6d8" }}>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-1">رسوم تحرير الأرباح:</p>
-                  <p className="font-extrabold text-[20px]" style={{ color: "#8B1A1A" }}>{user.liberationFee} ر.س</p>
-                  <div className="mt-3 flex flex-col gap-1">
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ تأكيد سداد رسوم التحرير</p>
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ إرسال إشعار للمستفيد</p>
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ بدء العد التنازلي 24 ساعة للمرحلة الثانية</p>
-                  </div>
-                </div>
-              )}
-              {adminModal.type === "add-transaction-fee" && (
-                <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fff8e1", border: "1.5px solid #fde68a" }}>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ المعاملة:</p>
-                  <p className="font-extrabold text-[20px] text-[#92400e]">{Number(addTransactionAmt).toLocaleString("en-US")} ر.س</p>
-                </div>
-              )}
-              {adminModal.type === "pay-transaction-fee" && (
-                <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fff8e1", border: "1.5px solid #fde68a" }}>
-                  <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ المعاملة:</p>
-                  <p className="font-extrabold text-[20px] text-[#92400e]">{user.transactionFee} ر.س</p>
-                  <div className="mt-3 flex flex-col gap-1">
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ تأكيد سداد مبلغ المعاملة</p>
-                    <p className="text-[11px] text-[#16a34a] font-semibold">✓ إرسال إشعار للمستفيد</p>
-                  </div>
-                </div>
-              )}
-              {adminModal.type === "add-custom-phase-amount" && (() => {
-                const ph = customPhases.find((p) => p.id === adminModal.phaseId);
-                const color = ph?.cardColor || "#2952e3";
-                return (
-                  <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: `${color}12`, border: `1.5px solid ${color}44` }}>
-                    <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ {ph?.name ?? "المرحلة المخصصة"}:</p>
-                    <p className="font-extrabold text-[20px]" style={{ color }}>{Number(addCustomPhaseAmt).toLocaleString("en-US")} ر.س</p>
-                  </div>
-                );
-              })()}
-              {adminModal.type === "pay-custom-phase" && (() => {
-                const ph = customPhases.find((p) => p.id === adminModal.phaseId);
-                const ucp = userCustomPhases.find((p) => p.phaseId === adminModal.phaseId);
-                const color = ph?.cardColor || "#2952e3";
-                return (
-                  <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: `${color}12`, border: `1.5px solid ${color}44` }}>
-                    <p className="text-[12px] font-semibold text-[#374151] mb-1">{ph?.name ?? "المرحلة المخصصة"}:</p>
-                    <p className="font-extrabold text-[20px]" style={{ color }}>{ucp?.amount ?? 0} ر.س</p>
+      {/* ── Admin Confirmation Modal ─────────────────────────── */}
+      {adminModal && (() => {
+        const isPayFees = adminModal.type === "pay-fees";
+        const isPayLib = adminModal.type === "pay-liberation-fee";
+        const isPayTx = adminModal.type === "pay-transaction-fee";
+        const isPayCustom = adminModal.type === "pay-custom-phase";
+        const isPayModal = isPayFees || isPayLib || isPayTx || isPayCustom;
+
+        const customPhaseObj = isPayCustom ? customPhases.find((p) => p.id === adminModal.phaseId) : null;
+        const customUcpObj = isPayCustom ? userCustomPhases.find((p) => p.phaseId === adminModal.phaseId) : null;
+
+        const currentRequiredStr = isPayFees
+          ? user.fees
+          : isPayLib
+          ? user.liberationFee
+          : isPayTx
+          ? user.transactionFee
+          : isPayCustom
+          ? (customUcpObj?.amount ?? "0")
+          : "0";
+
+        const currentRequiredNum = parseFloat(String(currentRequiredStr).replace(/,/g, "")) || 0;
+        const enteredPayNum = parseFloat(payAmountInput.replace(/,/g, "")) || 0;
+        const remainingNum = Math.max(0, currentRequiredNum - enteredPayNum);
+        const isPartial = isPayModal && enteredPayNum > 0 && enteredPayNum < currentRequiredNum;
+        const isFull = isPayModal && enteredPayNum >= currentRequiredNum;
+        const isPayInvalid = isPayModal && (isNaN(enteredPayNum) || enteredPayNum <= 0 || enteredPayNum > currentRequiredNum);
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4"
+            style={{ background: "rgba(10,15,40,0.6)", backdropFilter: "blur(4px)", fontFamily: "'Cairo', sans-serif" }}
+            dir="rtl">
+            <div className="w-full max-w-sm bg-white rounded-3xl overflow-hidden shadow-2xl"
+              style={{ animation: "popIn 0.25s cubic-bezier(.175,.885,.32,1.275)" }}>
+              <div className="px-5 py-4 text-center border-b border-[#eef0f6]"
+                style={{ background:
+                  adminModal.type === "add-profits" ? "linear-gradient(135deg,#0f7a38,#22c55e)"
+                  : adminModal.type === "add-fees" ? "linear-gradient(135deg,#d97706,#f59e0b)"
+                  : adminModal.type === "add-liberation-fee" || adminModal.type === "pay-liberation-fee" ? "linear-gradient(135deg,#4a0a0a,#8B1A1A)"
+                  : adminModal.type === "add-transaction-fee" || adminModal.type === "pay-transaction-fee" ? "linear-gradient(135deg,#78350f,#d97706)"
+                  : adminModal.type === "add-custom-phase-amount" || adminModal.type === "pay-custom-phase"
+                    ? makeCardGradient(customPhases.find((p) => p.id === adminModal.phaseId)?.cardColor ?? null)
+                  : "linear-gradient(135deg,#c8005a,#f0196e)"
+                }}>
+                <p className="text-white font-extrabold text-[15px]">
+                  {adminModal.type === "add-profits" ? "تأكيد إضافة الأرباح"
+                    : adminModal.type === "add-fees" ? "تأكيد إضافة الرسوم"
+                    : adminModal.type === "pay-fees" ? "سداد رسوم السحب (المرحلة الثانية)"
+                    : adminModal.type === "add-liberation-fee" ? "تأكيد إضافة رسوم التحرير"
+                    : adminModal.type === "pay-liberation-fee" ? "سداد رسوم التحرير (المرحلة الأولى)"
+                    : adminModal.type === "add-transaction-fee" ? "تأكيد إضافة مبلغ المعاملة"
+                    : adminModal.type === "pay-transaction-fee" ? "سداد مبلغ المعاملة (المرحلة الثالثة)"
+                    : adminModal.type === "add-custom-phase-amount" ? `تأكيد إضافة مبلغ ${customPhases.find((p) => p.id === adminModal.phaseId)?.name ?? "المرحلة"}`
+                    : `سداد ${customPhases.find((p) => p.id === adminModal.phaseId)?.name ?? "المرحلة المخصصة"}`}
+                </p>
+              </div>
+              <div className="px-5 py-5">
+                {adminModal.type === "add-profits" && (
+                  <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#f0fdf4", border: "1.5px solid #bbf7d0" }}>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-1">المبلغ المراد إضافته:</p>
+                    <p className="font-extrabold text-[20px] text-[#16a34a]">{Number(addProfitAmt).toLocaleString("en-US")} ر.س</p>
                     <div className="mt-3 flex flex-col gap-1">
-                      <p className="text-[11px] text-[#16a34a] font-semibold">✓ تأكيد سداد المرحلة المخصصة</p>
+                      <p className="text-[11px] text-[#16a34a] font-semibold">✓ تحديث إجمالي الأرباح</p>
                       <p className="text-[11px] text-[#16a34a] font-semibold">✓ إرسال إشعار للمستفيد</p>
+                      <p className="text-[11px] text-[#16a34a] font-semibold">✓ تسجيل العملية في السجل المالي</p>
                     </div>
                   </div>
-                );
-              })()}
-              <div className="flex gap-3">
-                <button onClick={() => setAdminModal(null)} disabled={adminLoading}
-                  className="flex-1 py-2.5 rounded-xl border border-[#e2e8f0] text-[#5a6282] font-bold text-[13px] hover:bg-[#f3f5fa] transition-colors disabled:opacity-50">
-                  إلغاء
-                </button>
-                <button onClick={() => void handleAdminFinancial()} disabled={adminLoading}
-                  className="flex-1 py-2.5 rounded-xl text-white font-bold text-[13px] transition-opacity active:opacity-90 disabled:opacity-50"
-                  style={{ background: adminModal.type === "add-profits" ? "linear-gradient(135deg,#0f7a38,#22c55e)" : adminModal.type === "add-fees" ? "linear-gradient(135deg,#d97706,#f59e0b)" : adminModal.type === "add-liberation-fee" || adminModal.type === "pay-liberation-fee" ? "linear-gradient(135deg,#4a0a0a,#8B1A1A)" : adminModal.type === "add-transaction-fee" || adminModal.type === "pay-transaction-fee" ? "linear-gradient(135deg,#78350f,#d97706)" : "linear-gradient(135deg,#c8005a,#f0196e)" }}>
-                  {adminLoading ? "جارٍ..." : "تأكيد"}
-                </button>
+                )}
+                {adminModal.type === "add-fees" && (
+                  <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fef3c7", border: "1.5px solid #fde68a" }}>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ رسوم السحب:</p>
+                    <p className="font-extrabold text-[20px] text-[#d97706]">{Number(addFeesAmt).toLocaleString("en-US")} ر.س</p>
+                  </div>
+                )}
+                {adminModal.type === "add-liberation-fee" && (
+                  <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fdf2f8", border: "1.5px solid #f5c6d8" }}>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ رسوم التحرير:</p>
+                    <p className="font-extrabold text-[20px]" style={{ color: "#8B1A1A" }}>{Number(addLiberationAmt).toLocaleString("en-US")} ر.س</p>
+                  </div>
+                )}
+                {adminModal.type === "add-transaction-fee" && (
+                  <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: "#fff8e1", border: "1.5px solid #fde68a" }}>
+                    <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ المعاملة:</p>
+                    <p className="font-extrabold text-[20px] text-[#92400e]">{Number(addTransactionAmt).toLocaleString("en-US")} ر.س</p>
+                  </div>
+                )}
+                {adminModal.type === "add-custom-phase-amount" && (() => {
+                  const ph = customPhases.find((p) => p.id === adminModal.phaseId);
+                  const color = ph?.cardColor || "#2952e3";
+                  return (
+                    <div className="rounded-2xl p-4 mb-4 text-right" style={{ background: `${color}12`, border: `1.5px solid ${color}44` }}>
+                      <p className="text-[12px] font-semibold text-[#374151] mb-1">مبلغ {ph?.name ?? "المرحلة المخصصة"}:</p>
+                      <p className="font-extrabold text-[20px]" style={{ color }}>{Number(addCustomPhaseAmt).toLocaleString("en-US")} ر.س</p>
+                    </div>
+                  );
+                })()}
+
+                {/* ── Interactive Payment Form (Full or Partial) ── */}
+                {isPayModal && (
+                  <div className="rounded-2xl p-4 mb-4 text-right"
+                    style={{
+                      background: isPayFees ? "#fef2f2" : isPayLib ? "#fdf2f8" : isPayTx ? "#fff8e1" : `${customPhaseObj?.cardColor || "#2952e3"}12`,
+                      border: `1.5px solid ${isPayFees ? "#fecaca" : isPayLib ? "#f5c6d8" : isPayTx ? "#fde68a" : `${customPhaseObj?.cardColor || "#2952e3"}44`}`
+                    }}>
+                    {/* Current Required Fee */}
+                    <div className="flex items-center justify-between pb-3 mb-3 border-b border-black/10">
+                      <span className="font-extrabold text-[18px]" style={{
+                        color: isPayFees ? "#ef4444" : isPayLib ? "#8B1A1A" : isPayTx ? "#92400e" : (customPhaseObj?.cardColor || "#2952e3")
+                      }}>
+                        {currentRequiredStr} ر.س
+                      </span>
+                      <span className="text-[12px] font-bold text-[#475569]">المبلغ المطلوب حالياً:</span>
+                    </div>
+
+                    {/* Partial Payment Input Field */}
+                    <div className="mb-3">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setPayAmountInput(String(currentRequiredNum))}
+                          className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg bg-white border border-[#cbd5e1] text-[#334155] hover:bg-[#f8fafc] transition-colors shadow-sm"
+                        >
+                          كامل المبلغ
+                        </button>
+                        <label className="text-[12px] font-bold text-[#1e293b]">المبلغ المراد سداده الآن:</label>
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          value={payAmountInput}
+                          onChange={(e) => setPayAmountInput(e.target.value)}
+                          placeholder="أدخل مبلغ السداد..."
+                          className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-[#cbd5e1] bg-white text-[#1a1f3c] text-[15px] font-extrabold text-right outline-none focus:border-[#2952e3] focus:ring-2 focus:ring-[#2952e3]/20 transition-all"
+                          dir="rtl"
+                        />
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[12px] font-bold text-[#64748b]">ر.س</span>
+                      </div>
+                    </div>
+
+                    {/* Dynamic calculation result */}
+                    {isPartial && (
+                      <div className="rounded-xl p-3 bg-amber-50 border border-amber-200 mb-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-extrabold text-[15px] text-amber-700">{remainingNum.toLocaleString("en-US")} ر.س</span>
+                          <span className="text-[11px] font-bold text-amber-900">المبلغ المتبقي بعد السداد:</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-800 mt-2">
+                          <span>⚡</span>
+                          <span>سداد جزئي: ستتحول الحالة إلى "مسدد جزئياً"</span>
+                        </div>
+                        <p className="text-[10px] text-amber-700 mt-1 leading-relaxed">
+                          سيصل إشعار للمستفيد بالمبلغ المسدد ({enteredPayNum.toLocaleString("en-US")} ر.س) والمتبقي ({remainingNum.toLocaleString("en-US")} ر.س)، وتتحدث رسالة التنبيه تلقائياً بالمبلغ المتبقي.
+                        </p>
+                      </div>
+                    )}
+
+                    {isFull && (
+                      <div className="rounded-xl p-3 bg-emerald-50 border border-emerald-200 mb-2">
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-800">
+                          <span>✓</span>
+                          <span>سداد كامل المبلغ (المتبقي: 0 ر.س)</span>
+                        </div>
+                        <p className="text-[10px] text-emerald-700 mt-1">
+                          سيتم اعتماد سداد كامل المبلغ واعتبار المرحلة مكتملة بالكامل والانتقال للمرحلة التالية.
+                        </p>
+                      </div>
+                    )}
+
+                    {isPayInvalid && (
+                      <div className="rounded-xl p-2.5 bg-red-50 border border-red-200 text-red-700 text-[11px] font-bold">
+                        {enteredPayNum > currentRequiredNum
+                          ? `لا يمكن أن يتجاوز مبلغ السداد المبلغ المطلوب (${currentRequiredStr} ر.س)`
+                          : "يرجى إدخال مبلغ سداد صحيح أكبر من 0"}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex gap-3">
+                  <button onClick={() => setAdminModal(null)} disabled={adminLoading}
+                    className="flex-1 py-2.5 rounded-xl border border-[#e2e8f0] text-[#5a6282] font-bold text-[13px] hover:bg-[#f3f5fa] transition-colors disabled:opacity-50">
+                    إلغاء
+                  </button>
+                  <button
+                    onClick={() => void handleAdminFinancial()}
+                    disabled={adminLoading || (isPayModal && isPayInvalid)}
+                    className="flex-1 py-2.5 rounded-xl text-white font-bold text-[13px] transition-opacity active:opacity-90 disabled:opacity-50"
+                    style={{ background: adminModal.type === "add-profits" ? "linear-gradient(135deg,#0f7a38,#22c55e)" : adminModal.type === "add-fees" ? "linear-gradient(135deg,#d97706,#f59e0b)" : adminModal.type === "add-liberation-fee" || adminModal.type === "pay-liberation-fee" ? "linear-gradient(135deg,#4a0a0a,#8B1A1A)" : adminModal.type === "add-transaction-fee" || adminModal.type === "pay-transaction-fee" ? "linear-gradient(135deg,#78350f,#d97706)" : "linear-gradient(135deg,#c8005a,#f0196e)" }}>
+                    {adminLoading
+                      ? "جارٍ..."
+                      : isPayModal
+                      ? isPartial
+                        ? `تأكيد السداد الجزئي (${enteredPayNum.toLocaleString("en-US")} ر.س)`
+                        : "تأكيد السداد بالكامل"
+                      : "تأكيد"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── Financial Transaction Log Panel ──────────────────── */}
       {showTransactionLog && (
@@ -2755,11 +2964,13 @@ function UserFormModal({
   initial,
   onSave,
   onClose,
+  isAgent,
 }: {
   mode: "create" | "edit";
   initial: UserFormData;
   onSave: (data: UserFormData) => void;
   onClose: () => void;
+  isAgent?: boolean;
 }) {
   const [form, setForm] = useState(initial);
   const [showPass, setShowPass] = useState(false);
@@ -2767,6 +2978,8 @@ function UserFormModal({
   function set(key: keyof typeof form, val: string) {
     setForm((p) => ({ ...p, [key]: val }));
   }
+
+  const PROTECTED_FIELDS = ["name", "accountHolder", "username", "iban", "loginSlug"];
 
   const fields: { key: keyof Omit<User, "id" | "status">; label: string; placeholder: string; ltr?: boolean }[] = [
     { key: "username", label: "اسم المستخدم", placeholder: "username" },
@@ -2798,6 +3011,12 @@ function UserFormModal({
         </div>
 
         <div className="px-5 py-5 flex flex-col gap-4" dir="rtl">
+          {isAgent && mode === "edit" && (
+            <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-bold">
+              🔒 ملاحظة للوكيل: الحقول الأساسية (الاسم، صاحب الحساب، اسم المستخدم، الإيبان، الرابط) محددة ومحمية من قبل الإدارة ولا يمكن تغييرها.
+            </div>
+          )}
+
           {/* Password field */}
           <div className="text-right">
             <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5">كلمة المرور</label>
@@ -2807,7 +3026,7 @@ function UserFormModal({
                 dir="ltr"
                 value={form.password}
                 onChange={(e) => set("password", e.target.value)}
-                placeholder="أدخل كلمة المرور"
+                placeholder={mode === "edit" ? "اتركها فارغة إذا لم ترغب في التغيير" : "أدخل كلمة المرور"}
                 className="w-full px-4 py-2.5 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none focus:border-[#7c3aed] focus:ring-1 focus:ring-[#7c3aed] transition-all pr-10"
               />
               <button type="button" onClick={() => setShowPass(!showPass)}
@@ -2817,20 +3036,35 @@ function UserFormModal({
             </div>
           </div>
 
-          {fields.map((f) => (
-            <div key={f.key} className="text-right">
-              <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5">{f.label}</label>
-              <input
-                type="text"
-                value={form[f.key] as string}
-                onChange={(e) => set(f.key, e.target.value)}
-                placeholder={f.placeholder}
-                dir={f.ltr ? "ltr" : "rtl"}
-                className="w-full px-4 py-2.5 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none focus:border-[#7c3aed] focus:ring-1 focus:ring-[#7c3aed] transition-all"
-                style={f.ltr ? { textAlign: "left", direction: "ltr" } : {}}
-              />
-            </div>
-          ))}
+          {fields.map((f) => {
+            const isLocked = isAgent && mode === "edit" && PROTECTED_FIELDS.includes(f.key);
+            return (
+              <div key={f.key} className="text-right">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-[11px] font-bold text-[#5a6282]">{f.label}</label>
+                  {isLocked && (
+                    <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 border border-amber-300">
+                      🔒 محمي للمسؤول
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={form[f.key] as string}
+                  onChange={(e) => set(f.key, e.target.value)}
+                  placeholder={f.placeholder}
+                  disabled={isLocked}
+                  dir={f.ltr ? "ltr" : "rtl"}
+                  className={`w-full px-4 py-2.5 rounded-xl border text-[12px] font-semibold text-right outline-none transition-all ${
+                    isLocked
+                      ? "bg-gray-100 text-gray-500 border-gray-200 cursor-not-allowed"
+                      : "bg-[#f8f9fc] text-[#1a1f3c] border-[#e2e8f0] focus:border-[#7c3aed] focus:ring-1 focus:ring-[#7c3aed]"
+                  }`}
+                  style={f.ltr ? { textAlign: "left", direction: "ltr" } : {}}
+                />
+              </div>
+            );
+          })}
 
           {/* Status */}
           <div className="text-right">
@@ -2898,6 +3132,7 @@ function AdminDashboard({
   onLogout: () => void;
   onViewUser: (userId: string) => void;
 }) {
+  const [activeTab, setActiveTab] = useState<"beneficiaries" | "agents">("beneficiaries");
   const [modal, setModal] = useState<ModalState>({ type: "none" });
   const [showPassId, setShowPassId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -2911,6 +3146,25 @@ function AdminDashboard({
   const [newPhaseCardColor, setNewPhaseCardColor] = useState("");
   const [editPhase, setEditPhase] = useState<CustomPhase | null>(null);
   const [deletePhaseId, setDeletePhaseId] = useState<number | null>(null);
+
+  // Agent Management state
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentModal, setAgentModal] = useState<
+    | { type: "none" }
+    | { type: "create" }
+    | { type: "edit"; agent: Agent }
+    | { type: "assign"; agent: Agent }
+  >({ type: "none" });
+  const [showAgentPassId, setShowAgentPassId] = useState<number | null>(null);
+
+  // Collapsible cards state
+  const [collapsedBeneficiaryIds, setCollapsedBeneficiaryIds] = useState<Record<string, boolean>>({});
+  const [collapsedAgentIds, setCollapsedAgentIds] = useState<Record<number, boolean>>({});
+
+  // Filtering state
+  const [filters, setFilters] = useState<FilterState>(defaultFilterState);
+
   // Deposit management state
   const [depositModalUserId, setDepositModalUserId] = useState<string | null>(null);
   const [depositData, setDepositData] = useState<DepositMethods | null>(null);
@@ -2920,9 +3174,23 @@ function AdminDashboard({
     bankAccountName: "", bankIban: "", bankName: "",
     usdtWalletAddress: "", usdtNetwork: "",
   });
+
   // Admin notifications state
   const [adminNotifs, setAdminNotifs] = useState<AdminDepositNotif[]>([]);
   const [showAdminNotifPanel, setShowAdminNotifPanel] = useState(false);
+
+  const loadAgents = useCallback(async () => {
+    try {
+      setAgentLoading(true);
+      const data = await apiFetch<Agent[]>("/agents");
+      setAgents(data);
+    } catch { /* silent */ }
+    finally { setAgentLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    void loadAgents();
+  }, [loadAgents]);
 
   const loadAdminNotifs = useCallback(async () => {
     try {
@@ -2949,7 +3217,6 @@ function AdminDashboard({
   async function openDepositFromNotif(notif: AdminDepositNotif) {
     await markAdminNotifRead(notif.id);
     setShowAdminNotifPanel(false);
-    // find matching user string id
     const userMatch = users.find((u) => u.id === String(notif.beneficiaryId));
     if (userMatch) void openDepositModal(userMatch.id);
   }
@@ -3009,6 +3276,62 @@ function AdminDashboard({
     finally { setPhaseLoading(false); }
   }
 
+  async function handleSaveAgent(data: Partial<Agent> & { password?: string }) {
+    setSaving(true);
+    try {
+      if (agentModal.type === "create") {
+        await apiFetch("/agents", { method: "POST", body: JSON.stringify(data) });
+      } else if (agentModal.type === "edit") {
+        await apiFetch(`/agents/${agentModal.agent.id}`, { method: "PUT", body: JSON.stringify(data) });
+      }
+      await loadAgents();
+      await onRefresh();
+      setAgentModal({ type: "none" });
+    } catch (e) {
+      alert("فشلت العملية: " + (e instanceof Error ? e.message : "خطأ"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleToggleAgentStatus(agentId: number, status: "active" | "frozen" | "disabled") {
+    try {
+      await apiFetch(`/agents/${agentId}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+      await loadAgents();
+    } catch (e) {
+      alert("فشل تغيير حالة الوكيل: " + (e instanceof Error ? e.message : "خطأ"));
+    }
+  }
+
+  async function handleDeleteAgent(agentId: number) {
+    if (!confirm("هل أنت تأكد من حذف هذا الوكيل؟ سيتم إلغاء ربط المستفيدين التابعين له.")) return;
+    try {
+      await apiFetch(`/agents/${agentId}`, { method: "DELETE" });
+      await loadAgents();
+      await onRefresh();
+    } catch (e) {
+      alert("فشل حذف الوكيل: " + (e instanceof Error ? e.message : "خطأ"));
+    }
+  }
+
+  async function handleAssignBeneficiariesToAgent(beneficiaryIds: number[]) {
+    if (agentModal.type !== "assign") return;
+    setSaving(true);
+    try {
+      await apiFetch(`/agents/${agentModal.agent.id}/assign-beneficiaries`, {
+        method: "POST",
+        body: JSON.stringify({ beneficiaryIds }),
+      });
+      await loadAgents();
+      await onRefresh();
+      setAgentModal({ type: "none" });
+    } catch (e) {
+      alert("فشل تعيين المستفيدين: " + (e instanceof Error ? e.message : "خطأ"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function openDepositModal(userId: string) {
     setDepositModalUserId(userId);
     setDepositLoading(true);
@@ -3061,6 +3384,7 @@ function AdminDashboard({
         body: JSON.stringify(data),
       });
       await onRefresh();
+      await loadAgents();
       setModal({ type: "none" });
     } catch (e) {
       alert("فشل حفظ المستفيد: " + (e instanceof Error ? e.message : "خطأ غير معروف"));
@@ -3078,6 +3402,7 @@ function AdminDashboard({
         body: JSON.stringify(data),
       });
       await onRefresh();
+      await loadAgents();
       setModal({ type: "none" });
     } catch (e) {
       alert("فشل تعديل المستفيد: " + (e instanceof Error ? e.message : "خطأ غير معروف"));
@@ -3092,6 +3417,7 @@ function AdminDashboard({
     try {
       await apiFetch(`/beneficiaries/${modal.userId}`, { method: "DELETE" });
       await onRefresh();
+      await loadAgents();
       setModal({ type: "none" });
     } catch (e) {
       alert("فشل حذف المستفيد: " + (e instanceof Error ? e.message : "خطأ غير معروف"));
@@ -3119,18 +3445,59 @@ function AdminDashboard({
     }
   }
 
-  void saving;
+  // Beneficiary Filter & Sort Computation
+  const filteredUsers = users
+    .filter((u) => {
+      if (filters.search.trim()) {
+        const q = filters.search.trim().toLowerCase();
+        const matchName = u.name.toLowerCase().includes(q);
+        const matchUser = u.username.toLowerCase().includes(q);
+        const matchPhone = (u.phone || "").toLowerCase().includes(q);
+        const matchIban = (u.iban || "").toLowerCase().includes(q);
+        if (!matchName && !matchUser && !matchPhone && !matchIban) return false;
+      }
+      if (filters.status !== "all" && u.status !== filters.status) return false;
+      if (filters.feeStatus !== "all") {
+        const statuses = [u.withdrawalFeeStatus, u.liberationFeeStatus, u.transactionFeeStatus];
+        if (filters.feeStatus === "unpaid" && !statuses.includes("unpaid")) return false;
+        if (filters.feeStatus === "partial" && !statuses.includes("partial")) return false;
+        if (filters.feeStatus === "paid" && !statuses.includes("paid")) return false;
+      }
+      if (filters.agentId !== "all") {
+        if (filters.agentId === "unassigned") {
+          if (u.agentId !== null && u.agentId !== undefined) return false;
+        } else {
+          if (u.agentId !== filters.agentId) return false;
+        }
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (filters.sortBy === "newest") return Number(b.id) - Number(a.id);
+      if (filters.sortBy === "oldest") return Number(a.id) - Number(b.id);
+      if (filters.sortBy === "name_asc") return a.name.localeCompare(b.name, "ar");
+      if (filters.sortBy === "profits_desc") {
+        const pA = parseFloat(a.profits.replace(/,/g, "")) || 0;
+        const pB = parseFloat(b.profits.replace(/,/g, "")) || 0;
+        return pB - pA;
+      }
+      if (filters.sortBy === "fees_desc") {
+        const fA = parseFloat(a.fees.replace(/,/g, "")) || 0;
+        const fB = parseFloat(b.fees.replace(/,/g, "")) || 0;
+        return fB - fA;
+      }
+      return 0;
+    });
 
   const editingUser = modal.type === "edit" ? users.find((u) => u.id === modal.userId) : null;
   const disablingUser = modal.type === "disable" ? users.find((u) => u.id === modal.userId) : null;
 
   return (
     <div className="max-w-md mx-auto min-h-screen pb-10" dir="rtl">
-      {/* Header */}
-      <div className="px-4 pt-5 pb-4">
+      {/* Top Bar Header */}
+      <div className="px-4 pt-5 pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {/* Notifications bell */}
             <button
               onClick={() => {
                 setShowAdminNotifPanel(true);
@@ -3155,440 +3522,496 @@ function AdminDashboard({
             </button>
           </div>
           <div className="text-right">
-            <h1 className="text-[19px] font-extrabold text-[#1a1f3c]">قائمة المستفيدين</h1>
-            <p className="text-[11px] text-[#5a6282] font-medium">مرحباً، المدير</p>
+            <h1 className="text-[19px] font-extrabold text-[#1a1f3c]">لوحة الإدارة</h1>
+            <p className="text-[11px] text-[#5a6282] font-medium">مرحباً، المدير العام</p>
           </div>
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="px-4 mb-5">
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            { label: "إجمالي المستفيدين", value: users.length, color: "#2952e3" },
-            { label: "حسابات نشطة", value: users.filter((u) => u.status === "active").length, color: "#16a34a" },
-            { label: "حسابات معطّلة", value: users.filter((u) => u.status === "disabled").length, color: "#ef4444" },
-          ].map((s) => (
-            <div key={s.label} className="bg-white rounded-2xl p-3 text-center border border-[#e2e8f0] shadow-sm">
-              <p className="font-extrabold text-[22px] leading-none" style={{ color: s.color }}>{s.value}</p>
-              <p className="text-[9px] font-semibold text-[#8892a4] mt-1 leading-snug">{s.label}</p>
-            </div>
-          ))}
+      {/* Navigation Tab Switcher */}
+      <div className="px-4 mb-4">
+        <div className="bg-white p-1 rounded-2xl border border-[#e2e8f0] flex gap-1 shadow-sm">
+          <button
+            onClick={() => setActiveTab("beneficiaries")}
+            className={`flex-1 py-2.5 rounded-xl font-extrabold text-[13px] transition-all ${
+              activeTab === "beneficiaries"
+                ? "bg-[#1a1f3c] text-white shadow"
+                : "text-[#64748b] hover:bg-gray-50"
+            }`}
+          >
+            👥 المستفيدون ({users.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("agents")}
+            className={`flex-1 py-2.5 rounded-xl font-extrabold text-[13px] transition-all ${
+              activeTab === "agents"
+                ? "bg-[#1a1f3c] text-white shadow"
+                : "text-[#64748b] hover:bg-gray-50"
+            }`}
+          >
+            🛡️ الوكلاء ({agents.length})
+          </button>
         </div>
       </div>
 
-      {/* Phases Management Button */}
-      <div className="px-4 mb-4">
-        <button
-          onClick={() => setShowPhases((v) => !v)}
-          className="w-full flex items-center justify-between px-4 py-3 rounded-2xl text-white font-bold text-[13px] transition-opacity active:opacity-90"
-          style={{ background: "linear-gradient(135deg,#1e3a5f,#2952e3)" }}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-          </svg>
-          <span>إدارة المراحل المخصصة</span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-            style={{ transform: showPhases ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </button>
-
-        {showPhases && (
-          <div className="mt-3 bg-white rounded-2xl border border-[#e2e8f0] shadow-sm p-4">
-            <p className="text-[13px] font-bold text-[#1a1f3c] mb-4 text-right">إنشاء مرحلة جديدة</p>
-            <input
-              type="text"
-              value={newPhaseName}
-              onChange={(e) => setNewPhaseName(e.target.value)}
-              placeholder="اسم المرحلة..."
-              className="w-full px-3 py-2.5 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[13px] font-semibold text-right outline-none mb-2"
-              dir="rtl"
-            />
-            <input
-              type="text"
-              value={newPhaseFailureMessage}
-              onChange={(e) => setNewPhaseFailureMessage(e.target.value)}
-              placeholder="نص رسالة الفشل (مطلوب)..."
-              className="w-full px-3 py-2.5 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[13px] font-semibold text-right outline-none mb-2"
-              dir="rtl"
-            />
-            <input
-              type="text"
-              value={newPhaseFailureTitle}
-              onChange={(e) => setNewPhaseFailureTitle(e.target.value)}
-              placeholder="عنوان رسالة الفشل (اختياري)..."
-              className="w-full px-3 py-2.5 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[13px] font-semibold text-right outline-none mb-2"
-              dir="rtl"
-            />
-            <div className="flex items-center gap-2 mb-3">
-              <input
-                type="color"
-                value={newPhaseCardColor || "#1a1f3c"}
-                onChange={(e) => setNewPhaseCardColor(e.target.value)}
-                className="w-10 h-10 rounded-lg border border-[#e2e8f0] cursor-pointer"
-                title="لون البطاقة"
-              />
-              <input
-                type="text"
-                value={newPhaseCardColor}
-                onChange={(e) => setNewPhaseCardColor(e.target.value)}
-                placeholder="لون البطاقة (اختياري) مثال: #8B1A1A"
-                className="flex-1 px-3 py-2.5 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[13px] font-semibold text-right outline-none"
-                dir="ltr"
-              />
+      {/* ── TAB 1: BENEFICIARIES ─────────────────────────────────────── */}
+      {activeTab === "beneficiaries" && (
+        <>
+          {/* Stats Summary */}
+          <div className="px-4 mb-4">
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: "إجمالي المستفيدين", value: users.length, color: "#2952e3" },
+                { label: "حسابات نشطة", value: users.filter((u) => u.status === "active").length, color: "#16a34a" },
+                { label: "حسابات معطّلة", value: users.filter((u) => u.status === "disabled").length, color: "#ef4444" },
+              ].map((s) => (
+                <div key={s.label} className="bg-white rounded-2xl p-3 text-center border border-[#e2e8f0] shadow-sm">
+                  <p className="font-extrabold text-[22px] leading-none" style={{ color: s.color }}>{s.value}</p>
+                  <p className="text-[9px] font-semibold text-[#8892a4] mt-1 leading-snug">{s.label}</p>
+                </div>
+              ))}
             </div>
+          </div>
+
+          {/* Action Buttons Row */}
+          <div className="px-4 mb-4 flex gap-2">
             <button
-              onClick={() => void handleCreatePhase()}
-              disabled={!newPhaseName.trim() || !newPhaseFailureMessage.trim() || phaseLoading}
-              className="w-full py-2.5 rounded-xl text-white font-bold text-[13px] disabled:opacity-40 transition-opacity active:opacity-90"
-              style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}>
-              {phaseLoading ? "جارٍ الحفظ..." : "إضافة المرحلة"}
+              onClick={() => setModal({ type: "create" })}
+              className="flex-1 flex items-center justify-center gap-1.5 py-3 rounded-2xl text-white font-bold text-[13px] shadow-md transition-opacity active:opacity-90"
+              style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}
+            >
+              <Icon.Plus />
+              <span>إضافة مستفيد جديد</span>
             </button>
 
-            {phases.length > 0 && (
-              <div className="mt-4 flex flex-col gap-3">
-                <p className="text-[12px] font-bold text-[#8892a4] text-right">المراحل الموجودة ({phases.length})</p>
-                {phases.map((phase) => (
-                  <div key={phase.id} className="p-3 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc]">
-                    {editPhase?.id === phase.id ? (
-                      <div>
-                        <input
-                          type="text"
-                          value={editPhase.name}
-                          onChange={(e) => setEditPhase({ ...editPhase, name: e.target.value })}
-                          className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
-                          dir="rtl"
-                        />
-                        <input
-                          type="text"
-                          value={editPhase.failureMessage}
-                          onChange={(e) => setEditPhase({ ...editPhase, failureMessage: e.target.value })}
-                          className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
-                          dir="rtl"
-                          placeholder="نص رسالة الفشل (مطلوب)..."
-                        />
-                        <input
-                          type="text"
-                          value={editPhase.failureTitle ?? ""}
-                          onChange={(e) => setEditPhase({ ...editPhase, failureTitle: e.target.value || null })}
-                          className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
-                          dir="rtl"
-                          placeholder="عنوان رسالة الفشل (اختياري)..."
-                        />
-                        <div className="flex items-center gap-2 mb-2">
-                          <input
-                            type="color"
-                            value={editPhase.cardColor || "#1a1f3c"}
-                            onChange={(e) => setEditPhase({ ...editPhase, cardColor: e.target.value })}
-                            className="w-8 h-8 rounded-lg border border-[#e2e8f0] cursor-pointer"
-                          />
-                          <input
-                            type="text"
-                            value={editPhase.cardColor ?? ""}
-                            onChange={(e) => setEditPhase({ ...editPhase, cardColor: e.target.value || null })}
-                            className="flex-1 px-3 py-2 rounded-xl border border-[#e2e8f0] bg-white text-[#1a1f3c] text-[12px] font-semibold outline-none"
-                            dir="ltr"
-                            placeholder="لون البطاقة مثال: #8B1A1A"
-                          />
-                        </div>
-                        <div className="flex gap-2">
-                          <button onClick={() => void handleUpdatePhase()} disabled={phaseLoading}
-                            className="flex-1 py-2 rounded-xl text-white font-bold text-[12px] disabled:opacity-40"
-                            style={{ background: "linear-gradient(135deg,#2952e3,#4f8ef7)" }}>
-                            حفظ
-                          </button>
-                          <button onClick={() => setEditPhase(null)}
-                            className="flex-1 py-2 rounded-xl text-[#5a6282] font-bold text-[12px] bg-[#f0f0f0]">
-                            إلغاء
-                          </button>
-                        </div>
-                      </div>
-                    ) : deletePhaseId === phase.id ? (
-                      <div className="text-right">
-                        <p className="text-[12px] font-bold text-[#ef4444] mb-2">حذف "{phase.name}"؟</p>
-                        <div className="flex gap-2">
-                          <button onClick={() => void handleDeletePhase(phase.id)} disabled={phaseLoading}
-                            className="flex-1 py-2 rounded-xl text-white font-bold text-[12px] disabled:opacity-40"
-                            style={{ background: "linear-gradient(135deg,#dc2626,#ef4444)" }}>
-                            تأكيد الحذف
-                          </button>
-                          <button onClick={() => setDeletePhaseId(null)}
-                            className="flex-1 py-2 rounded-xl text-[#5a6282] font-bold text-[12px] bg-[#f0f0f0]">
-                            إلغاء
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-between">
-                        <div className="flex gap-2">
-                          <button onClick={() => setDeletePhaseId(phase.id)}
-                            className="p-1.5 rounded-lg text-red-400 hover:bg-red-50 transition-colors">
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-                          </button>
-                          <button onClick={() => setEditPhase(phase)}
-                            className="p-1.5 rounded-lg text-blue-400 hover:bg-blue-50 transition-colors">
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                          </button>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-[13px] font-bold text-[#1a1f3c]">{phase.name}</p>
-                          {phase.failureMessage && <p className="text-[10px] text-[#8892a4] mt-0.5">{phase.failureMessage}</p>}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            <button
+              onClick={() => setShowPhases((v) => !v)}
+              className="px-4 py-3 rounded-2xl bg-white border border-[#cbd5e1] text-[#1e293b] font-bold text-[12px] shadow-sm hover:bg-gray-50 transition-colors flex items-center gap-1"
+            >
+              <span>المراحل المخصصة</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                style={{ transform: showPhases ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
           </div>
-        )}
-      </div>
 
-      {/* Section header */}
-      <div className="px-4 flex items-center justify-between mb-4">
-        <button onClick={() => setModal({ type: "create" })}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-white text-[12px] font-bold shadow-md transition-opacity active:opacity-90"
-          style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}>
-          <Icon.Plus />
-          <span>إضافة مستفيد</span>
-        </button>
-        <h2 className="text-[15px] font-bold text-[#1a1f3c]">المستفيدون</h2>
-      </div>
-
-      {/* Beneficiary Cards */}
-      <div className="px-4 flex flex-col gap-4">
-        {users.map((user) => (
-          <div key={user.id} className="bg-white rounded-3xl border border-[#e2e8f0] shadow-sm overflow-hidden">
-            <div className="h-1.5 w-full"
-              style={{ background: user.status === "active" ? "linear-gradient(90deg,#2952e3,#7c3aed)" : "#d1d5db" }} />
-
-            <div className="p-4">
-              {/* Identity row — name is clickable */}
-              <div className="flex items-start justify-between mb-4">
-                <span className={`text-[10px] font-bold px-2.5 py-1 rounded-lg ${user.status === "active" ? "bg-emerald-50 text-emerald-600 border border-emerald-200" : "bg-red-50 text-red-500 border border-red-200"}`}>
-                  {user.status === "active" ? "نشط" : "معطّل"}
-                </span>
-                <div className="text-right">
-                  <button
-                    onClick={() => onViewUser(user.id)}
-                    className="text-[14px] font-bold text-[#2952e3] leading-snug hover:underline text-right"
-                  >
-                    {user.name}
-                  </button>
-                  <p className="text-[11px] text-[#8892a4] font-medium mt-0.5" dir="ltr" style={{ textAlign: "right" }}>
-                    @{user.username}
-                  </p>
+          {/* Phases Management Collapsible */}
+          {showPhases && (
+            <div className="px-4 mb-4">
+              <div className="bg-white rounded-3xl border border-[#e2e8f0] shadow-sm p-4">
+                <p className="text-[13px] font-bold text-[#1a1f3c] mb-3 text-right">إنشاء مرحلة جديدة</p>
+                <input
+                  type="text"
+                  value={newPhaseName}
+                  onChange={(e) => setNewPhaseName(e.target.value)}
+                  placeholder="اسم المرحلة..."
+                  className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
+                  dir="rtl"
+                />
+                <input
+                  type="text"
+                  value={newPhaseFailureMessage}
+                  onChange={(e) => setNewPhaseFailureMessage(e.target.value)}
+                  placeholder="نص رسالة الفشل (مطلوب)..."
+                  className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
+                  dir="rtl"
+                />
+                <input
+                  type="text"
+                  value={newPhaseFailureTitle}
+                  onChange={(e) => setNewPhaseFailureTitle(e.target.value)}
+                  placeholder="عنوان رسالة الفشل (اختياري)..."
+                  className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
+                  dir="rtl"
+                />
+                <div className="flex items-center gap-2 mb-3">
+                  <input
+                    type="color"
+                    value={newPhaseCardColor || "#1a1f3c"}
+                    onChange={(e) => setNewPhaseCardColor(e.target.value)}
+                    className="w-9 h-9 rounded-lg border border-[#e2e8f0] cursor-pointer"
+                  />
+                  <input
+                    type="text"
+                    value={newPhaseCardColor}
+                    onChange={(e) => setNewPhaseCardColor(e.target.value)}
+                    placeholder="لون البطاقة (اختياري) مثال: #8B1A1A"
+                    className="flex-1 px-3 py-2 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none"
+                    dir="ltr"
+                  />
                 </div>
-              </div>
+                <button
+                  onClick={() => void handleCreatePhase()}
+                  disabled={!newPhaseName.trim() || !newPhaseFailureMessage.trim() || phaseLoading}
+                  className="w-full py-2.5 rounded-xl text-white font-bold text-[12px] disabled:opacity-40 transition-opacity active:opacity-90"
+                  style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}>
+                  {phaseLoading ? "جارٍ الحفظ..." : "إضافة المرحلة"}
+                </button>
 
-              {/* Password */}
-              <div className="mb-4 text-right">
-                <label className="block text-[10px] font-bold text-[#8892a4] mb-1">كلمة المرور</label>
-                <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#f8f9fc] border border-[#e8eaf0]">
-                  <button onClick={() => setShowPassId(showPassId === user.id ? null : user.id)}
-                    className="text-[#8892a4] hover:text-[#5a6282]">
-                    {showPassId === user.id ? <Icon.EyeOff /> : <Icon.Eye />}
-                  </button>
-                  <span className="text-[12px] font-semibold text-[#1a1f3c]" dir="ltr">
-                    {showPassId === user.id
-                      ? (user.plainPassword || <span className="text-[#8892a4] italic text-[11px]">لم تُضبط بعد</span>)
-                      : "••••••••"}
-                  </span>
-                </div>
-              </div>
-
-              {/* Financial grid */}
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                {[
-                  { label: "أرباح الاشتراك", value: user.profits, color: "#16a34a", bg: "#f0fdf4", border: "#bbf7d0" },
-                  { label: "مبلغ الاشتراك", value: user.subscription, color: "#2952e3", bg: "#eff6ff", border: "#bfdbfe" },
-                  { label: "رسوم السحب", value: user.fees, color: "#ef4444", bg: "#fef2f2", border: "#fecaca" },
-                ].map((d) => (
-                  <div key={d.label} className="rounded-xl p-2.5 text-center border" style={{ background: d.bg, borderColor: d.border }}>
-                    <p className="font-extrabold text-[13px] leading-none" style={{ color: d.color }}>{d.value}</p>
-                    <p className="text-[8px] font-semibold mt-1 text-[#8892a4] leading-snug">{d.label}</p>
+                {phases.length > 0 && (
+                  <div className="mt-3 flex flex-col gap-2">
+                    <p className="text-[11px] font-bold text-[#8892a4] text-right">المراحل المتاحة ({phases.length})</p>
+                    {phases.map((phase) => (
+                      <div key={phase.id} className="p-3 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc]">
+                        <div className="flex items-center justify-between">
+                          <div className="flex gap-2">
+                            <button onClick={() => void handleDeletePhase(phase.id)} className="text-red-500 font-bold text-[11px]">حذف</button>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[12px] font-bold text-[#1a1f3c]">{phase.name}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
+            </div>
+          )}
 
-              {/* Bank info */}
-              <div className="rounded-2xl p-3.5 text-right mb-4"
-                style={{ background: "linear-gradient(135deg,#5b21b6,#7c3aed)" }}>
-                <p className="text-white/60 text-[9px] font-medium mb-0.5">اسم صاحب الحساب</p>
-                <p className="text-white font-bold text-[12px] leading-snug mb-2">{user.accountHolder}</p>
-                <p className="text-white/60 text-[9px] font-medium mb-0.5">رقم الإيبان</p>
-                <p className="text-white font-bold text-[11px]" dir="ltr" style={{ textAlign: "right", letterSpacing: "0.05em" }}>
-                  {user.iban}
-                </p>
+          {/* Search & Filter Bar */}
+          <div className="px-4">
+            <BeneficiaryFilterBar
+              filters={filters}
+              onChange={setFilters}
+              agents={agents}
+              totalCount={users.length}
+              filteredCount={filteredUsers.length}
+            />
+          </div>
+
+          {/* Beneficiaries Cards List */}
+          <div className="px-4 flex flex-col gap-4">
+            {filteredUsers.length === 0 ? (
+              <div className="bg-white rounded-3xl p-10 text-center text-[#8892a4] border border-[#e2e8f0]">
+                <div className="text-[36px] mb-2">🔍</div>
+                <p className="font-extrabold text-[14px] text-[#1a1f3c]">لا يوجد مستفيدون مطابقون</p>
+                <p className="text-[11px] text-[#64748b] mt-1">حاول تعديل الفلاتر أو إزالة البحث.</p>
               </div>
-
-              {/* Telegram link */}
-              {user.telegramLink ? (
-                <div className="rounded-2xl p-3.5 text-right mb-4"
-                  style={{ background: "#f0f9ff", border: "1.5px solid #bae6fd" }}>
-                  <p className="text-[10px] font-bold text-[#0369a1] mb-1">رابط تلجرام الإيداع</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <a
-                      href={user.telegramLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex-shrink-0"
-                      style={{ background: "#0088cc", color: "white", border: "1.5px solid #0077b5" }}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248-2.074 9.763c-.154.7-.566.87-1.148.54l-3.18-2.34-1.534 1.473c-.17.17-.312.312-.64.312l.228-3.233 5.88-5.306c.255-.228-.055-.354-.397-.126L6.91 14.41l-3.13-.978c-.68-.212-.693-.68.142-.998l12.24-4.717c.567-.206 1.063.126.4.531z"/>
-                      </svg>
-                      <span>فتح</span>
-                    </a>
-                    <p className="text-[11px] font-semibold text-[#0369a1] break-all flex-1" dir="ltr" style={{ textAlign: "left" }}>
-                      {user.telegramLink}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-2xl p-3.5 text-right mb-4"
-                  style={{ background: "#f8f9fc", border: "1.5px solid #e2e8f0" }}>
-                  <p className="text-[10px] font-bold text-[#8892a4] mb-1">رابط تلجرام الإيداع</p>
-                  <p className="text-[11px] text-[#8892a4] font-medium mt-1">
-                    لم يُحدد رابط بعد — أضفه عبر تعديل المستفيد
-                  </p>
-                </div>
-              )}
-
-              {/* Login URL info */}
-              {(() => {
-                const clientUrl = user.loginSlug
-                  ? `${window.location.origin}${import.meta.env.BASE_URL}client/${user.loginSlug}`
-                  : "";
-                const isCopied = copiedId === user.id;
+            ) : (
+              filteredUsers.map((user) => {
+                const isCollapsed = Boolean(collapsedBeneficiaryIds[user.id]);
                 return (
-                  <div className="rounded-2xl p-3.5 text-right mb-4"
-                    style={{
-                      background: user.loginSlug ? "#f0fdf4" : "#f8f9fc",
-                      border: `1.5px solid ${user.loginSlug ? "#bbf7d0" : "#e2e8f0"}`,
-                    }}>
-                    <p className="text-[10px] font-bold mb-1" style={{ color: user.loginSlug ? "#15803d" : "#8892a4" }}>
-                      عنوان صفحة تسجيل الدخول
-                    </p>
-                    <p className="text-[12px] font-bold text-[#1a1f3c] mb-2 leading-snug">
-                      {user.loginTitle || "—"}
-                    </p>
-                    <p className="text-[10px] font-bold mb-1" style={{ color: user.loginSlug ? "#15803d" : "#8892a4" }}>
-                      رابط تسجيل الدخول
-                    </p>
-                    {user.loginSlug ? (
-                      <div className="flex items-center gap-2 mt-1">
+                  <div key={user.id} className="bg-white rounded-3xl border border-[#e2e8f0] shadow-sm overflow-hidden transition-all">
+                    <div className="h-1.5 w-full"
+                      style={{ background: user.status === "active" ? "linear-gradient(90deg,#2952e3,#7c3aed)" : "#d1d5db" }} />
+
+                    {/* Collapsible Header */}
+                    <div
+                      onClick={() => setCollapsedBeneficiaryIds((prev) => ({ ...prev, [user.id]: !prev[user.id] }))}
+                      className="p-4 cursor-pointer hover:bg-slate-50/80 transition-colors flex items-center justify-between gap-3 select-none"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[#64748b] bg-gray-100 transition-transform duration-200 ${isCollapsed ? "rotate-180" : ""}`}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="6 9 12 15 18 9"/>
+                          </svg>
+                        </div>
+                        <div className="flex flex-col items-start gap-1">
+                          <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-lg ${user.status === "active" ? "bg-emerald-50 text-emerald-600 border border-emerald-200" : "bg-red-50 text-red-500 border border-red-200"}`}>
+                            {user.status === "active" ? "نشط" : "معطّل"}
+                          </span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200">
+                            الوكيل: {user.agentName || "غير مسند"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right flex-1 min-w-0">
                         <button
-                          onClick={() => copyUrl(user.id, clientUrl)}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all flex-shrink-0"
-                          style={{
-                            background: isCopied ? "#dcfce7" : "#e0f2fe",
-                            color: isCopied ? "#15803d" : "#0369a1",
-                            border: `1.5px solid ${isCopied ? "#86efac" : "#bae6fd"}`,
-                          }}
+                          onClick={(e) => { e.stopPropagation(); onViewUser(user.id); }}
+                          className="text-[15px] font-extrabold text-[#2952e3] leading-snug hover:underline text-right block truncate w-full"
                         >
-                          {isCopied ? <Icon.CopyDone /> : <Icon.Copy />}
-                          <span>{isCopied ? "تم النسخ!" : "نسخ"}</span>
+                          {user.name}
                         </button>
-                        <p
-                          className="text-[11px] font-semibold text-[#2952e3] break-all flex-1"
-                          dir="ltr"
-                          style={{ textAlign: "left" }}
-                        >
-                          {clientUrl}
+                        <p className="text-[11px] text-[#8892a4] font-medium mt-0.5" dir="ltr" style={{ textAlign: "right" }}>
+                          @{user.username}
                         </p>
                       </div>
-                    ) : (
-                      <p className="text-[11px] text-[#8892a4] font-medium mt-1">
-                        لم يُحدد رابط بعد — أضفه عبر تعديل المستفيد
-                      </p>
+                    </div>
+
+                    {/* Collapsible Body */}
+                    {!isCollapsed && (
+                      <div className="px-4 pb-4 pt-1 border-t border-[#f1f5f9]">
+                        {/* Password */}
+                        <div className="mb-3 text-right">
+                          <label className="block text-[10px] font-bold text-[#8892a4] mb-1">كلمة المرور</label>
+                          <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#f8f9fc] border border-[#e8eaf0]">
+                            <button onClick={() => setShowPassId(showPassId === user.id ? null : user.id)}
+                              className="text-[#8892a4] hover:text-[#5a6282]">
+                              {showPassId === user.id ? <Icon.EyeOff /> : <Icon.Eye />}
+                            </button>
+                            <span className="text-[12px] font-semibold text-[#1a1f3c]" dir="ltr">
+                              {showPassId === user.id
+                                ? (user.plainPassword || <span className="text-[#8892a4] italic text-[11px]">لم تُضبط بعد</span>)
+                                : "••••••••"}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Financial grid */}
+                        <div className="grid grid-cols-3 gap-2 mb-3">
+                          {[
+                            { label: "أرباح الاشتراك", value: user.profits, color: "#16a34a", bg: "#f0fdf4", border: "#bbf7d0" },
+                            { label: "مبلغ الاشتراك", value: user.subscription, color: "#2952e3", bg: "#eff6ff", border: "#bfdbfe" },
+                            { label: "رسوم السحب", value: user.fees, color: "#ef4444", bg: "#fef2f2", border: "#fecaca" },
+                          ].map((d) => (
+                            <div key={d.label} className="rounded-xl p-2 text-center border" style={{ background: d.bg, borderColor: d.border }}>
+                              <p className="font-extrabold text-[13px] leading-none" style={{ color: d.color }}>{d.value}</p>
+                              <p className="text-[8px] font-semibold mt-1 text-[#8892a4] leading-snug">{d.label}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Bank info */}
+                        <div className="rounded-2xl p-3 text-right mb-3" style={{ background: "linear-gradient(135deg,#5b21b6,#7c3aed)" }}>
+                          <p className="text-white/60 text-[9px] font-medium mb-0.5">اسم صاحب الحساب</p>
+                          <p className="text-white font-bold text-[12px] leading-snug mb-1">{user.accountHolder}</p>
+                          <p className="text-white/60 text-[9px] font-medium mb-0.5">رقم الإيبان</p>
+                          <p className="text-white font-bold text-[11px]" dir="ltr" style={{ textAlign: "right", letterSpacing: "0.05em" }}>
+                            {user.iban}
+                          </p>
+                        </div>
+
+                        {/* Login Link Info */}
+                        {(() => {
+                          const clientUrl = user.loginSlug
+                            ? `${window.location.origin}${import.meta.env.BASE_URL}client/${user.loginSlug}`
+                            : "";
+                          const isCopied = copiedId === user.id;
+                          return (
+                            <div className="rounded-xl p-2.5 text-right mb-3 bg-[#f8f9fc] border border-[#e2e8f0]">
+                              <p className="text-[10px] font-bold text-[#8892a4] mb-1">رابط تسجيل الدخول للمستفيد</p>
+                              {user.loginSlug ? (
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => copyUrl(user.id, clientUrl)}
+                                    className="px-2 py-1 rounded-lg text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200"
+                                  >
+                                    {isCopied ? "تم النسخ ✓" : "نسخ الرابط"}
+                                  </button>
+                                  <p className="text-[11px] font-semibold text-[#2952e3] truncate flex-1 text-left" dir="ltr">
+                                    {clientUrl}
+                                  </p>
+                                </div>
+                              ) : (
+                                <p className="text-[10px] text-[#8892a4]">لم يحدد رابط بعد</p>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Deposit Methods Button */}
+                        <button
+                          onClick={() => void openDepositModal(user.id)}
+                          className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-[11px] font-bold transition-colors mb-2 bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                        >
+                          <span>💳 بيانات الإيداع البنكي / USDT</span>
+                        </button>
+
+                        {/* Action buttons */}
+                        <div className="flex gap-2">
+                          <button onClick={() => setModal({ type: "edit", userId: user.id })}
+                            className="flex-1 py-2 rounded-xl text-[11px] font-bold bg-blue-50 text-[#2952e3] border border-blue-200 hover:bg-blue-100">
+                            تعديل
+                          </button>
+                          <button onClick={() => setModal({ type: "disable", userId: user.id })}
+                            className={`flex-1 py-2 rounded-xl text-[11px] font-bold border ${user.status === "active" ? "bg-amber-50 text-amber-800 border-amber-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}>
+                            {user.status === "active" ? "تعطيل" : "تفعيل"}
+                          </button>
+                          <button onClick={() => setModal({ type: "delete", userId: user.id })}
+                            className="flex-1 py-2 rounded-xl text-[11px] font-bold bg-red-50 text-red-600 border border-red-200 hover:bg-red-100">
+                            حذف
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </div>
                 );
-              })()}
+              })
+            )}
+          </div>
+        </>
+      )}
 
-              {/* Deposit methods button */}
-              <button
-                onClick={() => void openDepositModal(user.id)}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-[12px] font-bold transition-colors mb-2"
-                style={{ background: "linear-gradient(135deg,#f0fdf4,#dcfce7)", color: "#059669", border: "1.5px solid #86efac" }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>
-                </svg>
-                <span>بيانات الإيداع</span>
-              </button>
-
-              {/* Action buttons */}
-              <div className="flex gap-2">
-                <button onClick={() => setModal({ type: "edit", userId: user.id })}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[12px] font-bold transition-colors"
-                  style={{ background: "#eff6ff", color: "#2952e3", border: "1.5px solid #bfdbfe" }}>
-                  <Icon.Edit /><span>تعديل</span>
-                </button>
-                <button onClick={() => setModal({ type: "disable", userId: user.id })}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[12px] font-bold transition-colors"
-                  style={{
-                    background: user.status === "active" ? "#fef3c7" : "#dcfce7",
-                    color: user.status === "active" ? "#d97706" : "#16a34a",
-                    border: `1.5px solid ${user.status === "active" ? "#fde68a" : "#86efac"}`,
-                  }}>
-                  <Icon.Ban /><span>{user.status === "active" ? "تعطيل" : "تفعيل"}</span>
-                </button>
-                <button onClick={() => setModal({ type: "delete", userId: user.id })}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[12px] font-bold transition-colors"
-                  style={{ background: "#fef2f2", color: "#ef4444", border: "1.5px solid #fecaca" }}>
-                  <Icon.Trash /><span>حذف</span>
-                </button>
-              </div>
+      {/* ── TAB 2: AGENTS ────────────────────────────────────────────── */}
+      {activeTab === "agents" && (
+        <div className="px-4 flex flex-col gap-4">
+          {/* Header Card */}
+          <div className="flex items-center justify-between bg-white rounded-3xl p-4 border border-[#e2e8f0] shadow-sm">
+            <button
+              onClick={() => setAgentModal({ type: "create" })}
+              className="px-4 py-2.5 rounded-2xl text-white font-bold text-[12px] shadow-sm transition-opacity active:opacity-90 flex items-center gap-1.5"
+              style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}
+            >
+              <Icon.Plus />
+              <span>إضافة وكيل جديد</span>
+            </button>
+            <div className="text-right">
+              <h2 className="text-[15px] font-extrabold text-[#1a1f3c]">إدارة الوكلاء والموظفين</h2>
+              <p className="text-[11px] text-[#64748b]">منح الصلاحيات وتحديد حصص المستفيدين</p>
             </div>
           </div>
-        ))}
 
-        {users.length === 0 && (
-          <div className="text-center py-16 text-[#8892a4]">
-            <p className="text-[13px] font-semibold">لا يوجد مستفيدون حتى الآن</p>
-            <p className="text-[11px] mt-1">اضغط على "إضافة مستفيد" للبدء</p>
-          </div>
-        )}
-      </div>
+          {agentLoading ? (
+            <div className="bg-white rounded-3xl p-10 text-center text-[#64748b] border border-[#e2e8f0]">
+              جارٍ تحميل قائمة الوكلاء...
+            </div>
+          ) : agents.length === 0 ? (
+            <div className="bg-white rounded-3xl p-10 text-center text-[#8892a4] border border-[#e2e8f0]">
+              <div className="text-[36px] mb-2">🛡️</div>
+              <p className="font-extrabold text-[14px] text-[#1a1f3c]">لا يوجد وكلاء حالياً</p>
+              <p className="text-[11px] text-[#64748b] mt-1">اضغط على "إضافة وكيل جديد" لإنشاء أول وكيل وتعيين صلاحياته.</p>
+            </div>
+          ) : (
+            agents.map((ag) => {
+              const count = ag.currentBeneficiariesCount ?? 0;
+              const quota = ag.maxBeneficiariesQuota;
+              const pct = quota > 0 ? Math.min(100, Math.round((count / quota) * 100)) : 100;
+              const isShowPass = showAgentPassId === ag.id;
+              const isCollapsed = Boolean(collapsedAgentIds[ag.id]);
 
-      {/* Modals */}
-      {modal.type === "create" && (
-        <UserFormModal mode="create" initial={emptyUser} onSave={handleCreate} onClose={() => setModal({ type: "none" })} />
+              return (
+                <div key={ag.id} className="bg-white rounded-3xl border border-[#e2e8f0] shadow-sm overflow-hidden transition-all">
+                  {/* Collapsible Header */}
+                  <div
+                    onClick={() => setCollapsedAgentIds((prev) => ({ ...prev, [ag.id]: !prev[ag.id] }))}
+                    className="p-4 cursor-pointer hover:bg-slate-50/80 transition-colors flex items-center justify-between gap-3 select-none"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-[#64748b] bg-gray-100 transition-transform duration-200 ${isCollapsed ? "rotate-180" : ""}`}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="6 9 12 15 18 9"/>
+                        </svg>
+                      </div>
+                      <span
+                        className={`text-[10px] font-extrabold px-2.5 py-1 rounded-lg ${
+                          ag.status === "active"
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : ag.status === "frozen"
+                            ? "bg-amber-50 text-amber-700 border border-amber-200"
+                            : "bg-red-50 text-red-700 border border-red-200"
+                        }`}
+                      >
+                        {ag.status === "active" ? "🟢 نشط" : ag.status === "frozen" ? "❄️ مجمّد" : "🔴 معطّل"}
+                      </span>
+                    </div>
+
+                    <div className="text-right flex-1 min-w-0">
+                      <h3 className="text-[15px] font-extrabold text-[#1a1f3c] truncate">{ag.name}</h3>
+                      <p className="text-[11px] text-[#64748b] font-medium" dir="ltr" style={{ textAlign: "right" }}>
+                        @{ag.username}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Collapsible Body */}
+                  {!isCollapsed && (
+                    <div className="px-4 pb-4 pt-1 border-t border-[#f1f5f9]">
+                      {/* Password Reveal */}
+                      <div className="mb-3 text-right">
+                        <label className="block text-[10px] font-bold text-[#8892a4] mb-1">كلمة المرور</label>
+                        <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#f8f9fc] border border-[#e8eaf0]">
+                          <button
+                            onClick={() => setShowAgentPassId(isShowPass ? null : ag.id)}
+                            className="text-[#8892a4] hover:text-[#5a6282]"
+                          >
+                            {isShowPass ? <Icon.EyeOff /> : <Icon.Eye />}
+                          </button>
+                          <span className="text-[12px] font-semibold text-[#1a1f3c]" dir="ltr">
+                            {isShowPass ? ag.plainPassword || "—" : "••••••••"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Quota Progress */}
+                      <div className="mb-3 p-3 rounded-2xl bg-[#f8fafc] border border-[#e2e8f0]">
+                        <div className="flex items-center justify-between text-[11px] font-bold mb-1">
+                          <span className="text-[#1e293b]">حصة المستفيدين:</span>
+                          <span dir="ltr" className="text-[#2952e3]">
+                            {count} / {quota} مستفيد
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-300"
+                            style={{
+                              width: `${pct}%`,
+                              background: count >= quota ? "#ef4444" : "#2952e3",
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Permissions Pills */}
+                      <div className="flex flex-wrap gap-1.5 mb-4">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${ag.canEditBeneficiaries ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                          {ag.canEditBeneficiaries ? "✓ تعديل المستفيدين" : "✗ تعديل المستفيدين"}
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${ag.canManagePhases ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                          {ag.canManagePhases ? "✓ إدارة المراحل" : "✗ إدارة المراحل"}
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${ag.canManageFinancials ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                          {ag.canManageFinancials ? "✓ العمليات المالية" : "✗ العمليات المالية"}
+                        </span>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => setAgentModal({ type: "assign", agent: ag })}
+                          className="py-2 rounded-xl bg-blue-50 text-[#2952e3] border border-blue-200 text-[11px] font-bold hover:bg-blue-100 transition-colors"
+                        >
+                          🔗 ربط مستفيدين
+                        </button>
+                        <button
+                          onClick={() => setAgentModal({ type: "edit", agent: ag })}
+                          className="py-2 rounded-xl bg-gray-100 text-[#334155] border border-gray-200 text-[11px] font-bold hover:bg-gray-200 transition-colors"
+                        >
+                          ✏️ تعديل والصلاحيات
+                        </button>
+                        <button
+                          onClick={() => void handleToggleAgentStatus(ag.id, ag.status === "frozen" ? "active" : "frozen")}
+                          className="py-2 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 text-[11px] font-bold hover:bg-amber-100 transition-colors"
+                        >
+                          {ag.status === "frozen" ? "☀️ إلغاء التجميد" : "❄️ تجميد الحساب"}
+                        </button>
+                        <button
+                          onClick={() => void handleDeleteAgent(ag.id)}
+                          className="py-2 rounded-xl bg-red-50 text-red-700 border border-red-200 text-[11px] font-bold hover:bg-red-100 transition-colors"
+                        >
+                          🗑️ حذف الوكيل
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
       )}
-      {modal.type === "edit" && editingUser && (
-        <UserFormModal
-          mode="edit"
-          initial={{
-            username: editingUser.username,
-            password: "",
-            name: editingUser.name,
-            profits: editingUser.profits,
-            subscription: editingUser.subscription,
-            fees: editingUser.fees,
-            accountHolder: editingUser.accountHolder,
-            iban: editingUser.iban,
-            phone: editingUser.phone,
-            status: editingUser.status,
-            loginTitle: editingUser.loginTitle ?? "",
-            loginSlug: editingUser.loginSlug ?? "",
-            telegramLink: editingUser.telegramLink ?? "",
-            withdrawalFeeStatus: editingUser.withdrawalFeeStatus ?? "unpaid",
-            withdrawalFeePaidAt: editingUser.withdrawalFeePaidAt ?? null,
-            liberationFee: editingUser.liberationFee ?? "0",
-            liberationFeeStatus: editingUser.liberationFeeStatus ?? "unpaid",
-            liberationFeePaidAt: editingUser.liberationFeePaidAt ?? null,
-            transactionFee: editingUser.transactionFee ?? "0",
-            transactionFeeStatus: editingUser.transactionFeeStatus ?? "unpaid",
-            transactionFeePaidAt: editingUser.transactionFeePaidAt ?? null,
-            plainPassword: editingUser.plainPassword ?? "",
-            phase1Visible: editingUser.phase1Visible ?? false,
-            phase2Visible: editingUser.phase2Visible ?? false,
-            phase3Visible: editingUser.phase3Visible ?? false,
-          }}
-          onSave={handleEdit}
-          onClose={() => setModal({ type: "none" })}
+
+      {/* Agent Form Modal (Create / Edit) */}
+      {(agentModal.type === "create" || agentModal.type === "edit") && (
+        <AgentFormModal
+          mode={agentModal.type === "create" ? "create" : "edit"}
+          initialAgent={agentModal.type === "edit" ? agentModal.agent : null}
+          onSave={handleSaveAgent}
+          onClose={() => setAgentModal({ type: "none" })}
+          loading={saving}
+        />
+      )}
+
+      {/* Assign Beneficiaries Modal */}
+      {agentModal.type === "assign" && (
+        <AssignBeneficiariesModal
+          agent={agentModal.agent}
+          beneficiaries={users}
+          onSave={handleAssignBeneficiariesToAgent}
+          onClose={() => setAgentModal({ type: "none" })}
+          loading={saving}
         />
       )}
       {modal.type === "delete" && (
@@ -4004,12 +4427,35 @@ export default function App() {
           onViewUser={(userId) => setView({ page: "user", userId, fromAdmin: true })}
         />
       )}
+      {view.page === "agent" && (
+        <AgentDashboard
+          initialAgent={view.agent}
+          onLogout={() => setView({ page: "login" })}
+          onViewBeneficiary={(beneficiaryId, agent) =>
+            setView({
+              page: "user",
+              userId: beneficiaryId,
+              fromAgent: true,
+              currentAgent: agent,
+            })
+          }
+          UserFormModalComponent={UserFormModal}
+        />
+      )}
       {view.page === "user" && activeUser && (
         <UserDashboard
           user={activeUser}
           onLogout={() => setView({ page: "login" })}
-          onBack={view.fromAdmin ? () => setView({ page: "admin" }) : undefined}
-          onRefreshUser={view.fromAdmin ? refreshUsers : undefined}
+          onBack={
+            view.fromAdmin
+              ? () => setView({ page: "admin" })
+              : view.fromAgent && view.currentAgent
+              ? () => setView({ page: "agent", agent: view.currentAgent! })
+              : undefined
+          }
+          onRefreshUser={view.fromAdmin || view.fromAgent ? refreshUsers : undefined}
+          isAgent={view.fromAgent}
+          currentAgent={view.currentAgent}
         />
       )}
       {view.page === "user" && !activeUser && loadingUsers && (

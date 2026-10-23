@@ -87,7 +87,7 @@ router.patch("/beneficiaries/:id/phase-visibility", async (req, res): Promise<vo
       phase2Visible?: boolean;
       phase3Visible?: boolean;
     };
-    const updateData: Parameters<ReturnType<typeof db.update<typeof beneficiariesTable>>["set"]>[0] = {};
+    const updateData: Record<string, any> = {};
     if (phase1Visible !== undefined) updateData.phase1Visible = phase1Visible;
     if (phase2Visible !== undefined) updateData.phase2Visible = phase2Visible;
     if (phase3Visible !== undefined) updateData.phase3Visible = phase3Visible;
@@ -181,6 +181,7 @@ router.post("/beneficiaries/:id/custom-phases/:phaseId/pay", async (req, res): P
   try {
     const userId = Number(req.params.id);
     const phaseId = Number(req.params.phaseId);
+    const { paidAmount } = req.body as { paidAmount?: number | string };
     const paidAt = new Date();
 
     const existing = await db.select().from(userCustomPhasesTable)
@@ -192,32 +193,73 @@ router.post("/beneficiaries/:id/custom-phases/:phaseId/pay", async (req, res): P
       return;
     }
 
-    const [row] = await db.update(userCustomPhasesTable).set({ status: "paid", paidAt })
-      .where(and(eq(userCustomPhasesTable.userId, userId), eq(userCustomPhasesTable.phaseId, phaseId)))
-      .returning();
+    const currentNum = parseFloat(String(existing[0].amount).replace(/,/g, "")) || 0;
+    const paidNum = paidAmount !== undefined && paidAmount !== null ? parseFloat(String(paidAmount).replace(/,/g, "")) : currentNum;
+
+    if (isNaN(paidNum) || paidNum <= 0) {
+      res.status(400).json({ error: "يرجى إدخال مبلغ سداد صحيح" });
+      return;
+    }
 
     const [phase] = await db.select().from(customPhasesTable).where(eq(customPhasesTable.id, phaseId)).limit(1);
     const [beneficiary] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, userId)).limit(1);
 
-    if (phase && beneficiary) {
-      const title = phase.failureTitle ?? `تم تأكيد سداد ${phase.name}`;
-      const message = `عزيز العميل / ${beneficiary.name} ✅ ${title}\nيرجى الإنتظار سوف يقوم النظام بمعالجة طلبك خلال أقل من 24 ساعة`;
-      await db.insert(notificationsTable).values({
-        beneficiaryId: userId,
-        type: "transaction_fee_paid",
-        title,
-        message,
-        isRead: false,
-      });
-      await db.insert(financialTransactionsTable).values({
-        beneficiaryId: userId,
-        type: `pay_custom_phase_${phaseId}`,
-        amount: existing[0].amount,
-        description: `تأكيد سداد ${phase.name}: ${existing[0].amount} ر.س`,
-      });
-    }
+    if (paidNum < currentNum) {
+      // Partial payment
+      const remainingNum = Math.max(0, currentNum - paidNum);
+      const formattedRemaining = remainingNum.toLocaleString("en-US");
+      const formattedPaid = paidNum.toLocaleString("en-US");
 
-    res.json(row);
+      const [row] = await db.update(userCustomPhasesTable).set({ amount: formattedRemaining, status: "partial", paidAt })
+        .where(and(eq(userCustomPhasesTable.userId, userId), eq(userCustomPhasesTable.phaseId, phaseId)))
+        .returning();
+
+      if (phase && beneficiary) {
+        const title = `إشعار سداد جزئي - ${phase.name}`;
+        const message = `عزيزي المستثمر / ${beneficiary.name}، تم استلام دفعة سداد بمبلغ ${formattedPaid} ر.س لـ ${phase.name}.\n\nالمبلغ المتبقي المطلوب عليكم لاستكمال المرحلة هو ${formattedRemaining} ر.س.`;
+        await db.insert(notificationsTable).values({
+          beneficiaryId: userId,
+          type: "phase_fee_paid_partial",
+          title,
+          message,
+          isRead: false,
+        });
+        await db.insert(financialTransactionsTable).values({
+          beneficiaryId: userId,
+          type: `pay_custom_phase_${phaseId}_partial`,
+          amount: String(paidNum),
+          description: `سداد جزئي لـ ${phase.name}: تم سداد ${formattedPaid} ر.س (المتبقي: ${formattedRemaining} ر.س)`,
+        });
+      }
+
+      res.json(row);
+    } else {
+      // Full payment
+      const formattedPaid = currentNum.toLocaleString("en-US");
+      const [row] = await db.update(userCustomPhasesTable).set({ amount: "0", status: "paid", paidAt })
+        .where(and(eq(userCustomPhasesTable.userId, userId), eq(userCustomPhasesTable.phaseId, phaseId)))
+        .returning();
+
+      if (phase && beneficiary) {
+        const title = phase.failureTitle ?? `تم تأكيد سداد كامل ${phase.name}`;
+        const message = `عزيز العميل / ${beneficiary.name} ✅ ${title}\nيرجى الإنتظار سوف يقوم النظام بمعالجة طلبك خلال أقل من 24 ساعة`;
+        await db.insert(notificationsTable).values({
+          beneficiaryId: userId,
+          type: "transaction_fee_paid",
+          title,
+          message,
+          isRead: false,
+        });
+        await db.insert(financialTransactionsTable).values({
+          beneficiaryId: userId,
+          type: `pay_custom_phase_${phaseId}`,
+          amount: String(currentNum),
+          description: `تأكيد سداد ${phase.name} بالكامل: ${formattedPaid} ر.س`,
+        });
+      }
+
+      res.json(row);
+    }
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "فشل تأكيد السداد" });

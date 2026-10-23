@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
-import { db, beneficiariesTable } from "@workspace/db";
-import { eq, getTableColumns } from "drizzle-orm";
+import { db, beneficiariesTable, depositMethodsTable, notificationsTable, financialTransactionsTable, userCustomPhasesTable, agentsTable } from "@workspace/db";
+import { eq, getTableColumns, sql } from "drizzle-orm";
 import bcrypt from "bcrypt";
 
 const router: IRouter = Router();
@@ -11,18 +11,33 @@ function safeColumnsPublic() {
   return rest;
 }
 
-// للأدمن: يُخفي الهاش فقط ويُظهر كلمة المرور النصية
+// للأدمن والوكيل: يُخفي الهاش فقط ويُظهر كلمة المرور النصية
 function safeColumnsAdmin() {
   const { passwordHash: _ph, ...rest } = getTableColumns(beneficiariesTable);
   return rest;
 }
 
-router.get("/beneficiaries", async (req, res) => {
+router.get("/beneficiaries", async (req, res): Promise<void> => {
   try {
-    const rows = await db
-      .select(safeColumnsAdmin())
+    const agentIdParam = req.query.agentId ? Number(req.query.agentId) : null;
+
+    let query = db
+      .select({
+        ...safeColumnsAdmin(),
+        agentName: agentsTable.name,
+      })
       .from(beneficiariesTable)
+      .leftJoin(agentsTable, eq(beneficiariesTable.agentId, agentsTable.id))
       .orderBy(beneficiariesTable.createdAt);
+
+    if (agentIdParam) {
+      // Filter for specific agent
+      const rows = await query.where(eq(beneficiariesTable.agentId, agentIdParam));
+      res.json(rows);
+      return;
+    }
+
+    const rows = await query;
     res.json(rows);
   } catch (err) {
     req.log.error(err);
@@ -49,7 +64,7 @@ router.get("/beneficiaries/by-slug/:slug", async (req, res): Promise<void> => {
   }
 });
 
-router.post("/beneficiaries", async (req, res) => {
+router.post("/beneficiaries", async (req, res): Promise<void> => {
   try {
     const body = req.body as {
       username: string;
@@ -65,7 +80,37 @@ router.post("/beneficiaries", async (req, res) => {
       loginTitle: string;
       loginSlug: string;
       telegramLink: string;
+      agentId?: number | null;
+      isAgentCreator?: boolean;
     };
+
+    // If created by an agent, check agent existence and quota
+    if (body.agentId && body.isAgentCreator) {
+      const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.id, body.agentId)).limit(1);
+      if (!agent) {
+        res.status(404).json({ error: "الوكيل غير موجود" });
+        return;
+      }
+      if (agent.status !== "active") {
+        res.status(403).json({ error: "حساب الوكيل مجمد أو معطل، لا يمكن إضافة مستفيدين جدد" });
+        return;
+      }
+
+      // Check current quota
+      const [countRow] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(beneficiariesTable)
+        .where(eq(beneficiariesTable.agentId, body.agentId));
+
+      const currentCount = countRow?.count ?? 0;
+      if (currentCount >= agent.maxBeneficiariesQuota) {
+        res.status(403).json({
+          error: `عذراً، لقد استنفدت الحصة المتاحة لك لإضافة المستفيدين (${agent.maxBeneficiariesQuota} مستفيدين). يرجى التواصل مع الإدارة لزيادة الحصة.`,
+        });
+        return;
+      }
+    }
+
     const normalizedPassword = body.password ? body.password.replace(/\s/g, "") : "";
     const passwordHash = normalizedPassword ? await bcrypt.hash(normalizedPassword, 12) : "";
     const [row] = await db
@@ -85,6 +130,7 @@ router.post("/beneficiaries", async (req, res) => {
         loginTitle: body.loginTitle ?? "",
         loginSlug: body.loginSlug ?? "",
         telegramLink: body.telegramLink ?? "",
+        agentId: body.agentId ?? null,
       })
       .returning();
     const { passwordHash: _ph, ...safe } = row;
@@ -112,7 +158,47 @@ router.put("/beneficiaries/:id", async (req, res): Promise<void> => {
       loginTitle: string;
       loginSlug: string;
       telegramLink: string;
+      agentId: number | null;
+      isAgentEditor?: boolean;
+      editorAgentId?: number;
     }>;
+
+    const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
+    if (!current) {
+      res.status(404).json({ error: "المستفيد غير موجود" });
+      return;
+    }
+
+    // If an agent is updating:
+    if (body.isAgentEditor && body.editorAgentId) {
+      const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.id, body.editorAgentId)).limit(1);
+      if (!agent || agent.status !== "active") {
+        res.status(403).json({ error: "حساب الوكيل غير متاح أو مجمد" });
+        return;
+      }
+      if (!agent.canEditBeneficiaries) {
+        res.status(403).json({ error: "ليس لديك صلاحية لتعديل بيانات المستفيدين" });
+        return;
+      }
+      // Agent can only update their own beneficiaries
+      if (current.agentId !== body.editorAgentId) {
+        res.status(403).json({ error: "لا يمكنك تعديل مستفيد غير مرتبط بحسابك" });
+        return;
+      }
+
+      // ENFORCE PROTECTED FIELDS FOR AGENTS:
+      // - الاسم المستفيد الكامل (name)
+      // - الاسم صاحب الحساب البنكي (accountHolder)
+      // - اسم المستخدم (username)
+      // - الايبان (iban)
+      // - رابط تسجيل الدخول للمستفيد (loginSlug)
+      delete body.name;
+      delete body.accountHolder;
+      delete body.username;
+      delete body.iban;
+      delete body.loginSlug;
+      delete body.agentId; // cannot reassign
+    }
 
     const updates: Record<string, unknown> = {};
     if (body.username !== undefined) updates.username = body.username;
@@ -132,13 +218,14 @@ router.put("/beneficiaries/:id", async (req, res): Promise<void> => {
     if (body.loginTitle !== undefined) updates.loginTitle = body.loginTitle;
     if (body.loginSlug !== undefined) updates.loginSlug = body.loginSlug;
     if (body.telegramLink !== undefined) updates.telegramLink = body.telegramLink;
+    if (body.agentId !== undefined) updates.agentId = body.agentId;
 
     const [row] = await db
       .update(beneficiariesTable)
       .set(updates)
       .where(eq(beneficiariesTable.id, id))
       .returning();
-    if (!row) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
+
     const { passwordHash: _ph, ...safe } = row;
     res.json(safe);
   } catch (err) {
@@ -147,9 +234,13 @@ router.put("/beneficiaries/:id", async (req, res): Promise<void> => {
   }
 });
 
-router.delete("/beneficiaries/:id", async (req, res) => {
+router.delete("/beneficiaries/:id", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
+    await db.delete(depositMethodsTable).where(eq(depositMethodsTable.beneficiaryId, id));
+    await db.delete(notificationsTable).where(eq(notificationsTable.beneficiaryId, id));
+    await db.delete(financialTransactionsTable).where(eq(financialTransactionsTable.beneficiaryId, id));
+    await db.delete(userCustomPhasesTable).where(eq(userCustomPhasesTable.userId, id));
     await db.delete(beneficiariesTable).where(eq(beneficiariesTable.id, id));
     res.json({ success: true });
   } catch (err) {

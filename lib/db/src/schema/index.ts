@@ -4,3 +4,4 @@ export * from "./admins";
 export * from "./financialTransactions";
 export * from "./customPhases";
 export * from "./depositMethods";
+export * from "./agents";

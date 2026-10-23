@@ -1,0 +1,7 @@
+{
+  "name": "المنصة المالية",
+  "description": "المنصة المالية - إدارة العمليات المالية والمستفيدين",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
