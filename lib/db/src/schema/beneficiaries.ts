@@ -5,6 +5,8 @@ import { z } from "zod/v4";
 export const beneficiariesTable = pgTable("beneficiaries", {
   id: serial("id").primaryKey(),
   agentId: integer("agent_id"),
+  agentIds: integer("agent_ids").array(),
+  agentNames: text("agent_names").array(),
   username: text("username").notNull().unique(),
   passwordHash: text("password_hash").notNull().default(""),
   plainPassword: text("plain_password").notNull().default(""),

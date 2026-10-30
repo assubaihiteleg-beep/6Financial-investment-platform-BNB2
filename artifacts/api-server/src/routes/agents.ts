@@ -1,34 +1,58 @@
 import { Router, type IRouter } from "express";
-import { db, agentsTable, beneficiariesTable } from "@workspace/db";
-import { eq, sql, inArray } from "drizzle-orm";
-import bcrypt from "bcrypt";
+import { db, agentsTable, beneficiariesTable, auditLogsTable } from "@workspace/db";
+import { eq, sql } from "drizzle-orm";
+import bcrypt from "bcryptjs";
 
 const router: IRouter = Router();
+
+// Helper to log audit actions
+export async function logAudit(
+  actorUsername: string,
+  actorRole: "admin" | "agent",
+  action: string,
+  targetType: string,
+  targetId: string | number,
+  details: string,
+  result: "success" | "denied" | "failure" = "success",
+  actorId?: number
+) {
+  try {
+    await db.insert(auditLogsTable).values({
+      actorId: actorId ?? null,
+      actorUsername,
+      actorRole,
+      action,
+      targetType,
+      targetId: String(targetId),
+      details,
+      result,
+      createdAt: new Date(),
+    });
+  } catch (err) {
+    console.warn("[AuditLog] Failed to record audit log:", err);
+  }
+}
 
 // 1. List all agents with assigned beneficiary count
 router.get("/agents", async (req, res): Promise<void> => {
   try {
     const agents = await db.select().from(agentsTable).orderBy(agentsTable.createdAt);
+    const allBeneficiaries = await db.select().from(beneficiariesTable);
 
-    // Get count of beneficiaries for each agent
-    const counts = await db
-      .select({
-        agentId: beneficiariesTable.agentId,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(beneficiariesTable)
-      .where(sql`${beneficiariesTable.agentId} IS NOT NULL`)
-      .groupBy(beneficiariesTable.agentId);
+    const result = agents.map((agent: typeof agentsTable.$inferSelect) => {
+      // Calculate count for this agent based on multi-agent agentIds array or legacy agentId
+      const count = allBeneficiaries.filter((b: any) => {
+        const ids: number[] = Array.isArray(b.agentIds) && b.agentIds.length > 0
+          ? b.agentIds.map(Number)
+          : (b.agentId ? [Number(b.agentId)] : []);
+        return ids.includes(Number(agent.id));
+      }).length;
 
-    const countMap = new Map<number, number>();
-    for (const c of counts) {
-      if (c.agentId) countMap.set(c.agentId, c.count);
-    }
-
-    const result = agents.map((agent: typeof agentsTable.$inferSelect) => ({
-      ...agent,
-      currentBeneficiariesCount: countMap.get(agent.id) ?? 0,
-    }));
+      return {
+        ...agent,
+        currentBeneficiariesCount: count,
+      };
+    });
 
     res.json(result);
   } catch (err) {
@@ -47,14 +71,17 @@ router.get("/agents/:id", async (req, res): Promise<void> => {
       return;
     }
 
-    const [countRow] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(beneficiariesTable)
-      .where(eq(beneficiariesTable.agentId, id));
+    const allBeneficiaries = await db.select().from(beneficiariesTable);
+    const count = allBeneficiaries.filter((b: any) => {
+      const ids: number[] = Array.isArray(b.agentIds) && b.agentIds.length > 0
+        ? b.agentIds.map(Number)
+        : (b.agentId ? [Number(b.agentId)] : []);
+      return ids.includes(id);
+    }).length;
 
     res.json({
       ...agent,
-      currentBeneficiariesCount: countRow?.count ?? 0,
+      currentBeneficiariesCount: count,
     });
   } catch (err) {
     req.log.error(err);
@@ -62,7 +89,7 @@ router.get("/agents/:id", async (req, res): Promise<void> => {
   }
 });
 
-// 3. Create new agent
+// 3. Create new agent with granular permissions
 router.post("/agents", async (req, res): Promise<void> => {
   try {
     const {
@@ -70,20 +97,22 @@ router.post("/agents", async (req, res): Promise<void> => {
       password,
       name,
       maxBeneficiariesQuota,
-      canEditBeneficiaries,
-      canManagePhases,
-      canManageFinancials,
       status,
-    } = req.body as {
-      username?: string;
-      password?: string;
-      name?: string;
-      maxBeneficiariesQuota?: number;
-      canEditBeneficiaries?: boolean;
-      canManagePhases?: boolean;
-      canManageFinancials?: boolean;
-      status?: string;
-    };
+      // Granular permissions
+      canViewBeneficiaries,
+      canAddBeneficiaries,
+      canEditBeneficiaries,
+      canDeleteBeneficiaries,
+      canManageProfits,
+      canManageFees,
+      canPayFees,
+      canManageFinancials,
+      canManagePhases,
+      canPayPhases,
+      canSendNotifications,
+      canViewAccountInfo,
+      canEditAccountInfo,
+    } = req.body;
 
     if (!username?.trim() || !password?.trim() || !name?.trim()) {
       res.status(400).json({ error: "اسم الوكيل، اسم المستخدم وكلمة المرور مطلوبة" });
@@ -108,11 +137,30 @@ router.post("/agents", async (req, res): Promise<void> => {
         name: name.trim(),
         status: status || "active",
         maxBeneficiariesQuota: Number(maxBeneficiariesQuota) || 5,
-        canEditBeneficiaries: canEditBeneficiaries ?? true,
-        canManagePhases: canManagePhases ?? false,
+        canViewBeneficiaries: canViewBeneficiaries ?? true,
+        canAddBeneficiaries: canAddBeneficiaries ?? false,
+        canEditBeneficiaries: canEditBeneficiaries ?? false,
+        canDeleteBeneficiaries: canDeleteBeneficiaries ?? false,
+        canManageProfits: canManageProfits ?? false,
+        canManageFees: canManageFees ?? false,
+        canPayFees: canPayFees ?? false,
         canManageFinancials: canManageFinancials ?? false,
+        canManagePhases: canManagePhases ?? false,
+        canPayPhases: canPayPhases ?? false,
+        canSendNotifications: canSendNotifications ?? false,
+        canViewAccountInfo: canViewAccountInfo ?? true,
+        canEditAccountInfo: canEditAccountInfo ?? false,
       })
       .returning();
+
+    await logAudit(
+      "Admin",
+      "admin",
+      "create_agent",
+      "agent",
+      newAgent.id,
+      `إنشاء حساب الوكيل: ${newAgent.name} (@${newAgent.username})`
+    );
 
     res.json(newAgent);
   } catch (err) {
@@ -121,7 +169,7 @@ router.post("/agents", async (req, res): Promise<void> => {
   }
 });
 
-// 4. Update agent
+// 4. Update agent with granular permissions
 router.put("/agents/:id", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
@@ -130,56 +178,67 @@ router.put("/agents/:id", async (req, res): Promise<void> => {
       password,
       name,
       maxBeneficiariesQuota,
-      canEditBeneficiaries,
-      canManagePhases,
-      canManageFinancials,
       status,
-    } = req.body as {
-      username?: string;
-      password?: string;
-      name?: string;
-      maxBeneficiariesQuota?: number;
-      canEditBeneficiaries?: boolean;
-      canManagePhases?: boolean;
-      canManageFinancials?: boolean;
-      status?: string;
-    };
+      canViewBeneficiaries,
+      canAddBeneficiaries,
+      canEditBeneficiaries,
+      canDeleteBeneficiaries,
+      canManageProfits,
+      canManageFees,
+      canPayFees,
+      canManageFinancials,
+      canManagePhases,
+      canPayPhases,
+      canSendNotifications,
+      canViewAccountInfo,
+      canEditAccountInfo,
+    } = req.body;
 
-    const [current] = await db.select().from(agentsTable).where(eq(agentsTable.id, id)).limit(1);
-    if (!current) {
+    const [existing] = await db.select().from(agentsTable).where(eq(agentsTable.id, id)).limit(1);
+    if (!existing) {
       res.status(404).json({ error: "الوكيل غير موجود" });
       return;
     }
 
-    const updateData: Partial<typeof agentsTable.$inferInsert> = {};
-
-    if (name?.trim()) updateData.name = name.trim();
-    if (status) updateData.status = status;
-    if (maxBeneficiariesQuota !== undefined) updateData.maxBeneficiariesQuota = Number(maxBeneficiariesQuota);
-    if (canEditBeneficiaries !== undefined) updateData.canEditBeneficiaries = Boolean(canEditBeneficiaries);
-    if (canManagePhases !== undefined) updateData.canManagePhases = Boolean(canManagePhases);
-    if (canManageFinancials !== undefined) updateData.canManageFinancials = Boolean(canManageFinancials);
-
-    if (username?.trim() && username.trim().toLowerCase() !== current.username) {
-      const cleanUsername = username.trim().toLowerCase();
-      const [existing] = await db.select().from(agentsTable).where(eq(agentsTable.username, cleanUsername)).limit(1);
-      if (existing) {
-        res.status(400).json({ error: "اسم المستخدم مستخدم بالفعل لوكيل آخر" });
-        return;
-      }
-      updateData.username = cleanUsername;
+    const updates: Record<string, any> = {};
+    if (name) updates.name = name.trim();
+    if (username) updates.username = username.trim().toLowerCase();
+    if (password && password.trim().length >= 6) {
+      updates.passwordHash = await bcrypt.hash(password.trim(), 12);
+      updates.plainPassword = password.trim();
     }
+    if (maxBeneficiariesQuota !== undefined) updates.maxBeneficiariesQuota = Number(maxBeneficiariesQuota);
+    if (status) updates.status = status;
 
-    if (password?.trim()) {
-      updateData.passwordHash = await bcrypt.hash(password.trim(), 12);
-      updateData.plainPassword = password.trim();
-    }
+    // Granular permissions
+    if (canViewBeneficiaries !== undefined) updates.canViewBeneficiaries = Boolean(canViewBeneficiaries);
+    if (canAddBeneficiaries !== undefined) updates.canAddBeneficiaries = Boolean(canAddBeneficiaries);
+    if (canEditBeneficiaries !== undefined) updates.canEditBeneficiaries = Boolean(canEditBeneficiaries);
+    if (canDeleteBeneficiaries !== undefined) updates.canDeleteBeneficiaries = Boolean(canDeleteBeneficiaries);
+    if (canManageProfits !== undefined) updates.canManageProfits = Boolean(canManageProfits);
+    if (canManageFees !== undefined) updates.canManageFees = Boolean(canManageFees);
+    if (canPayFees !== undefined) updates.canPayFees = Boolean(canPayFees);
+    if (canManageFinancials !== undefined) updates.canManageFinancials = Boolean(canManageFinancials);
+    if (canManagePhases !== undefined) updates.canManagePhases = Boolean(canManagePhases);
+    if (canPayPhases !== undefined) updates.canPayPhases = Boolean(canPayPhases);
+    if (canSendNotifications !== undefined) updates.canSendNotifications = Boolean(canSendNotifications);
+    if (canViewAccountInfo !== undefined) updates.canViewAccountInfo = Boolean(canViewAccountInfo);
+    if (canEditAccountInfo !== undefined) updates.canEditAccountInfo = Boolean(canEditAccountInfo);
 
     const [updated] = await db
       .update(agentsTable)
-      .set(updateData)
+      .set(updates)
       .where(eq(agentsTable.id, id))
       .returning();
+
+    await logAudit(
+      "Admin",
+      "admin",
+      "update_agent",
+      "agent",
+      id,
+      `تحديث بيانات وصلاحيات الوكيل: ${updated.name}`
+    );
 
     res.json(updated);
   } catch (err) {
@@ -188,60 +247,94 @@ router.put("/agents/:id", async (req, res): Promise<void> => {
   }
 });
 
-// 5. Update agent status (active, frozen, disabled)
-router.patch("/agents/:id/status", async (req, res): Promise<void> => {
+// 5. Freeze / Unfreeze agent
+router.patch("/agents/:id/toggle-status", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-    const { status } = req.body as { status: "active" | "frozen" | "disabled" };
-
-    if (!["active", "frozen", "disabled"].includes(status)) {
-      res.status(400).json({ error: "حالة غير صحيحة" });
-      return;
-    }
-
-    const [updated] = await db
-      .update(agentsTable)
-      .set({ status })
-      .where(eq(agentsTable.id, id))
-      .returning();
-
-    if (!updated) {
+    const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.id, id)).limit(1);
+    if (!agent) {
       res.status(404).json({ error: "الوكيل غير موجود" });
       return;
     }
+
+    const nextStatus = agent.status === "active" ? "frozen" : "active";
+    const [updated] = await db
+      .update(agentsTable)
+      .set({ status: nextStatus })
+      .where(eq(agentsTable.id, id))
+      .returning();
+
+    await logAudit(
+      "Admin",
+      "admin",
+      nextStatus === "frozen" ? "freeze_agent" : "unfreeze_agent",
+      "agent",
+      id,
+      `تغيير حالة الوكيل إلى: ${nextStatus === "frozen" ? "مجمد" : "نشط"}`
+    );
 
     res.json(updated);
   } catch (err) {
     req.log.error(err);
-    res.status(500).json({ error: "فشل تحديث حالة الوكيل" });
+    res.status(500).json({ error: "فشل تغيير حالة الوكيل" });
   }
 });
 
-// 6. Delete agent (unassigns beneficiaries)
+// 6. Delete agent
 router.delete("/agents/:id", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-
-    // Unassign all beneficiaries from this agent
-    await db
-      .update(beneficiariesTable)
-      .set({ agentId: null })
-      .where(eq(beneficiariesTable.agentId, id));
-
-    const [deleted] = await db.delete(agentsTable).where(eq(agentsTable.id, id)).returning();
-    if (!deleted) {
+    const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.id, id)).limit(1);
+    if (!agent) {
       res.status(404).json({ error: "الوكيل غير موجود" });
       return;
     }
 
-    res.json({ success: true, id });
+    // Clean up agent reference from beneficiaries without deleting beneficiaries
+    const allBeneficiaries = await db.select().from(beneficiariesTable);
+    const allAgents = await db.select().from(agentsTable);
+    const aMap = new Map<number, string>();
+    for (const a of allAgents) aMap.set(Number(a.id), a.name);
+
+    for (const b of allBeneficiaries) {
+      let ids: number[] = Array.isArray(b.agentIds) && b.agentIds.length > 0
+        ? b.agentIds.map(Number)
+        : (b.agentId ? [Number(b.agentId)] : []);
+
+      if (ids.includes(id)) {
+        ids = ids.filter((aid) => aid !== id);
+        const names = ids.map((aid) => aMap.get(aid)).filter(Boolean) as string[];
+        await db
+          .update(beneficiariesTable)
+          .set({
+            agentIds: ids,
+            agentNames: names,
+            agentId: ids[0] ?? null,
+            agentName: names.length > 0 ? names.join("، ") : null,
+          })
+          .where(eq(beneficiariesTable.id, b.id));
+      }
+    }
+
+    await db.delete(agentsTable).where(eq(agentsTable.id, id));
+
+    await logAudit(
+      "Admin",
+      "admin",
+      "delete_agent",
+      "agent",
+      id,
+      `حذف الوكيل: ${agent.name} وإلغاء ارتباطه بالمستفيدين`
+    );
+
+    res.json({ success: true });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "فشل حذف الوكيل" });
   }
 });
 
-// 7. Assign beneficiaries to agent
+// 7. Multi-agent assignment from Agent view (Assign / Unassign multiple beneficiaries to this agent)
 router.post("/agents/:id/assign-beneficiaries", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
@@ -253,12 +346,59 @@ router.post("/agents/:id/assign-beneficiaries", async (req, res): Promise<void> 
       return;
     }
 
-    if (Array.isArray(beneficiaryIds) && beneficiaryIds.length > 0) {
-      await db
-        .update(beneficiariesTable)
-        .set({ agentId: id })
-        .where(inArray(beneficiariesTable.id, beneficiaryIds));
+    const allAgents = await db.select().from(agentsTable);
+    const aMap = new Map<number, string>();
+    for (const a of allAgents) aMap.set(Number(a.id), a.name);
+
+    const allBeneficiaries = await db.select().from(beneficiariesTable);
+    const selectedSet = new Set((beneficiaryIds || []).map(Number));
+
+    for (const b of allBeneficiaries) {
+      const bId = Number(b.id);
+      let currentIds: number[] = Array.isArray(b.agentIds) && b.agentIds.length > 0
+        ? b.agentIds.map(Number)
+        : (b.agentId ? [Number(b.agentId)] : []);
+
+      const wasAssigned = currentIds.includes(id);
+      const shouldBeAssigned = selectedSet.has(bId);
+
+      if (shouldBeAssigned && !wasAssigned) {
+        // Add agent id (avoid duplicates)
+        currentIds = Array.from(new Set([...currentIds, id]));
+        const names = currentIds.map((aid) => aMap.get(aid)).filter(Boolean) as string[];
+        await db
+          .update(beneficiariesTable)
+          .set({
+            agentIds: currentIds,
+            agentNames: names,
+            agentId: currentIds[0] ?? null,
+            agentName: names.length > 0 ? names.join("، ") : null,
+          })
+          .where(eq(beneficiariesTable.id, bId));
+      } else if (!shouldBeAssigned && wasAssigned) {
+        // Remove agent id without removing other agents
+        currentIds = currentIds.filter((aid) => aid !== id);
+        const names = currentIds.map((aid) => aMap.get(aid)).filter(Boolean) as string[];
+        await db
+          .update(beneficiariesTable)
+          .set({
+            agentIds: currentIds,
+            agentNames: names,
+            agentId: currentIds[0] ?? null,
+            agentName: names.length > 0 ? names.join("، ") : null,
+          })
+          .where(eq(beneficiariesTable.id, bId));
+      }
     }
+
+    await logAudit(
+      "Admin",
+      "admin",
+      "assign_beneficiaries_to_agent",
+      "agent",
+      id,
+      `تحديث قائمة المستفيدين للوكيل: ${agent.name} (إجمالي المسندين: ${selectedSet.size})`
+    );
 
     res.json({ success: true });
   } catch (err) {
@@ -267,7 +407,54 @@ router.post("/agents/:id/assign-beneficiaries", async (req, res): Promise<void> 
   }
 });
 
-// 8. Agent changes their own password
+// 8. Direct multi-agent assignment for a single beneficiary
+router.post("/beneficiaries/:id/assign-agents", async (req, res): Promise<void> => {
+  try {
+    const id = Number(req.params.id);
+    const { agentIds } = req.body as { agentIds: number[] };
+
+    const [b] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
+    if (!b) {
+      res.status(404).json({ error: "المستفيد غير موجود" });
+      return;
+    }
+
+    const allAgents = await db.select().from(agentsTable);
+    const aMap = new Map<number, string>();
+    for (const a of allAgents) aMap.set(Number(a.id), a.name);
+
+    // Filter out duplicates and invalid IDs
+    const cleanIds: number[] = Array.from(new Set((agentIds || []).map(Number))).filter((aid) => aMap.has(aid));
+    const names = cleanIds.map((aid) => aMap.get(aid)).filter(Boolean) as string[];
+
+    const [updated] = await db
+      .update(beneficiariesTable)
+      .set({
+        agentIds: cleanIds,
+        agentNames: names,
+        agentId: cleanIds[0] ?? null,
+        agentName: names.length > 0 ? names.join("، ") : null,
+      })
+      .where(eq(beneficiariesTable.id, id))
+      .returning();
+
+    await logAudit(
+      "Admin",
+      "admin",
+      "assign_agents_to_beneficiary",
+      "beneficiary",
+      id,
+      `إسناد المستفيد (${b.name}) إلى الوكلاء: [${names.join("، ") || "إلغاء الإسناد"}]`
+    );
+
+    res.json(updated);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "فشل إسناد الوكلاء للمستفيد" });
+  }
+});
+
+// 9. Agent changes their own password
 router.post("/agents/:id/change-password", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
@@ -298,10 +485,23 @@ router.post("/agents/:id/change-password", async (req, res): Promise<void> => {
       .set({ passwordHash, plainPassword: newPassword.trim() })
       .where(eq(agentsTable.id, id));
 
+    await logAudit(agent.username, "agent", "change_password", "agent", id, "تغيير كلمة المرور الشخصية");
+
     res.json({ success: true });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ error: "فشل تغيير كلمة المرور" });
+  }
+});
+
+// 10. Audit logs list
+router.get("/audit-logs", async (req, res): Promise<void> => {
+  try {
+    const logs = await db.select().from(auditLogsTable).orderBy(sql`${auditLogsTable.createdAt} DESC`).limit(100);
+    res.json(logs);
+  } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ error: "فشل تحميل سجل التدقيق" });
   }
 });
 

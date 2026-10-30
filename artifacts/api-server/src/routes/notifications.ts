@@ -1,8 +1,42 @@
 import { Router, type IRouter } from "express";
-import { db, notificationsTable, beneficiariesTable, financialTransactionsTable } from "@workspace/db";
+import { db, notificationsTable, beneficiariesTable, financialTransactionsTable, agentsTable, auditLogsTable } from "@workspace/db";
 import { eq, sql, and, desc } from "drizzle-orm";
 
 const router: IRouter = Router();
+
+async function logAudit(params: {
+  action: string;
+  performedBy: string;
+  performerId?: number | null;
+  targetType: string;
+  targetId?: number | null;
+  details?: Record<string, unknown>;
+}) {
+  try {
+    await db.insert(auditLogsTable).values({
+      action: params.action,
+      performedBy: params.performedBy,
+      performerId: params.performerId ?? null,
+      targetType: params.targetType,
+      targetId: params.targetId ?? null,
+      details: params.details ? JSON.stringify(params.details) : null,
+    });
+  } catch (err) {
+    console.error("Failed to write audit log:", err);
+  }
+}
+
+async function verifyAgentPermission(
+  agentId: number | undefined,
+  requiredPerm: "canManageProfits" | "canManageFees" | "canPayFees" | "canSendNotifications"
+): Promise<{ allowed: boolean; agent?: any; error?: string }> {
+  if (!agentId) return { allowed: true };
+  const [agent] = await db.select().from(agentsTable).where(eq(agentsTable.id, agentId)).limit(1);
+  if (!agent) return { allowed: false, error: "الوكيل غير موجود" };
+  if (agent.status !== "active") return { allowed: false, error: "حساب الوكيل مجمّد أو معطّل" };
+  if (!agent[requiredPerm]) return { allowed: false, error: `ليس لدى الوكيل صلاحية لإتمام هذه العملية (${requiredPerm})` };
+  return { allowed: true, agent };
+}
 
 async function logTransaction(
   beneficiaryId: number,
@@ -81,7 +115,11 @@ router.put("/notifications/read-all/:beneficiaryId", async (req, res): Promise<v
 router.post("/beneficiaries/:id/add-profits", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-    const { amount } = req.body as { amount: number };
+    const { amount, editorAgentId } = req.body as { amount: number; editorAgentId?: number };
+
+    const perm = await verifyAgentPermission(editorAgentId, "canManageProfits");
+    if (!perm.allowed) { res.status(403).json({ error: perm.error }); return; }
+
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
@@ -106,6 +144,15 @@ router.post("/beneficiaries/:id/add-profits", async (req, res): Promise<void> =>
 
     await logTransaction(id, "add_profits", String(amount), `إضافة أرباح: ${amount.toLocaleString("en-US")} ر.س`);
 
+    await logAudit({
+      action: "add_profits",
+      performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+      performerId: editorAgentId ?? null,
+      targetType: "beneficiary",
+      targetId: id,
+      details: { amount, newProfits: formatted },
+    });
+
     res.json(updated);
   } catch (err) {
     req.log.error(err);
@@ -116,7 +163,11 @@ router.post("/beneficiaries/:id/add-profits", async (req, res): Promise<void> =>
 router.post("/beneficiaries/:id/add-fees", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-    const { amount } = req.body as { amount: number };
+    const { amount, editorAgentId } = req.body as { amount: number; editorAgentId?: number };
+
+    const perm = await verifyAgentPermission(editorAgentId, "canManageFees");
+    if (!perm.allowed) { res.status(403).json({ error: perm.error }); return; }
+
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
@@ -132,6 +183,15 @@ router.post("/beneficiaries/:id/add-fees", async (req, res): Promise<void> => {
 
     await logTransaction(id, "add_fees", String(amount), `إضافة رسوم سحب: ${amount.toLocaleString("en-US")} ر.س`);
 
+    await logAudit({
+      action: "add_fees",
+      performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+      performerId: editorAgentId ?? null,
+      targetType: "beneficiary",
+      targetId: id,
+      details: { amount, newFees: formatted },
+    });
+
     res.json(updated);
   } catch (err) {
     req.log.error(err);
@@ -142,7 +202,11 @@ router.post("/beneficiaries/:id/add-fees", async (req, res): Promise<void> => {
 router.post("/beneficiaries/:id/pay-fees", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-    const { paidAmount } = req.body as { paidAmount?: number | string };
+    const { paidAmount, editorAgentId } = req.body as { paidAmount?: number | string; editorAgentId?: number };
+
+    const perm = await verifyAgentPermission(editorAgentId, "canPayFees");
+    if (!perm.allowed) { res.status(403).json({ error: perm.error }); return; }
+
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
@@ -178,6 +242,15 @@ router.post("/beneficiaries/:id/pay-fees", async (req, res): Promise<void> => {
 
       await logTransaction(id, "pay_withdrawal_fees_partial", String(paidNum), `سداد جزئي لرسوم السحب: تم سداد ${formattedPaid} ر.س (المتبقي: ${formattedRemaining} ر.س)`);
 
+      await logAudit({
+        action: "pay_withdrawal_fees_partial",
+        performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+        performerId: editorAgentId ?? null,
+        targetType: "beneficiary",
+        targetId: id,
+        details: { paidAmount: paidNum, remaining: remainingNum },
+      });
+
       res.json(updated);
     } else {
       // Full payment
@@ -199,6 +272,15 @@ router.post("/beneficiaries/:id/pay-fees", async (req, res): Promise<void> => {
 
       await logTransaction(id, "pay_withdrawal_fees", String(currentNum), `تأكيد سداد رسوم السحب بالكامل: ${formattedPaid} ر.س`);
 
+      await logAudit({
+        action: "pay_withdrawal_fees_full",
+        performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+        performerId: editorAgentId ?? null,
+        targetType: "beneficiary",
+        targetId: id,
+        details: { paidAmount: currentNum },
+      });
+
       res.json(updated);
     }
   } catch (err) {
@@ -210,7 +292,11 @@ router.post("/beneficiaries/:id/pay-fees", async (req, res): Promise<void> => {
 router.post("/beneficiaries/:id/add-liberation-fee", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-    const { amount } = req.body as { amount: number };
+    const { amount, editorAgentId } = req.body as { amount: number; editorAgentId?: number };
+
+    const perm = await verifyAgentPermission(editorAgentId, "canManageFees");
+    if (!perm.allowed) { res.status(403).json({ error: perm.error }); return; }
+
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
@@ -223,6 +309,15 @@ router.post("/beneficiaries/:id/add-liberation-fee", async (req, res): Promise<v
 
     await logTransaction(id, "add_liberation_fee", String(amount), `إضافة رسوم تحرير الأرباح: ${formatted} ر.س`);
 
+    await logAudit({
+      action: "add_liberation_fee",
+      performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+      performerId: editorAgentId ?? null,
+      targetType: "beneficiary",
+      targetId: id,
+      details: { amount },
+    });
+
     res.json(updated);
   } catch (err) {
     req.log.error(err);
@@ -233,7 +328,11 @@ router.post("/beneficiaries/:id/add-liberation-fee", async (req, res): Promise<v
 router.post("/beneficiaries/:id/pay-liberation-fee", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-    const { paidAmount } = req.body as { paidAmount?: number | string };
+    const { paidAmount, editorAgentId } = req.body as { paidAmount?: number | string; editorAgentId?: number };
+
+    const perm = await verifyAgentPermission(editorAgentId, "canPayFees");
+    if (!perm.allowed) { res.status(403).json({ error: perm.error }); return; }
+
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
@@ -269,6 +368,15 @@ router.post("/beneficiaries/:id/pay-liberation-fee", async (req, res): Promise<v
 
       await logTransaction(id, "pay_liberation_fee_partial", String(paidNum), `سداد جزئي لرسوم تحرير الأرباح: تم سداد ${formattedPaid} ر.س (المتبقي: ${formattedRemaining} ر.س)`);
 
+      await logAudit({
+        action: "pay_liberation_fee_partial",
+        performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+        performerId: editorAgentId ?? null,
+        targetType: "beneficiary",
+        targetId: id,
+        details: { paidAmount: paidNum, remaining: remainingNum },
+      });
+
       res.json(updated);
     } else {
       // Full payment
@@ -290,6 +398,15 @@ router.post("/beneficiaries/:id/pay-liberation-fee", async (req, res): Promise<v
 
       await logTransaction(id, "pay_liberation_fee", String(currentNum), `تأكيد سداد رسوم تحرير الأرباح بالكامل: ${formattedPaid} ر.س`);
 
+      await logAudit({
+        action: "pay_liberation_fee_full",
+        performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+        performerId: editorAgentId ?? null,
+        targetType: "beneficiary",
+        targetId: id,
+        details: { paidAmount: currentNum },
+      });
+
       res.json(updated);
     }
   } catch (err) {
@@ -301,7 +418,11 @@ router.post("/beneficiaries/:id/pay-liberation-fee", async (req, res): Promise<v
 router.post("/beneficiaries/:id/add-transaction-fee", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-    const { amount } = req.body as { amount: number };
+    const { amount, editorAgentId } = req.body as { amount: number; editorAgentId?: number };
+
+    const perm = await verifyAgentPermission(editorAgentId, "canManageFees");
+    if (!perm.allowed) { res.status(403).json({ error: perm.error }); return; }
+
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
@@ -314,6 +435,15 @@ router.post("/beneficiaries/:id/add-transaction-fee", async (req, res): Promise<
 
     await logTransaction(id, "add_transaction_fee", String(amount), `إضافة مبلغ المعاملة: ${formatted} ر.س`);
 
+    await logAudit({
+      action: "add_transaction_fee",
+      performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+      performerId: editorAgentId ?? null,
+      targetType: "beneficiary",
+      targetId: id,
+      details: { amount },
+    });
+
     res.json(updated);
   } catch (err) {
     req.log.error(err);
@@ -324,7 +454,11 @@ router.post("/beneficiaries/:id/add-transaction-fee", async (req, res): Promise<
 router.post("/beneficiaries/:id/pay-transaction-fee", async (req, res): Promise<void> => {
   try {
     const id = Number(req.params.id);
-    const { paidAmount } = req.body as { paidAmount?: number | string };
+    const { paidAmount, editorAgentId } = req.body as { paidAmount?: number | string; editorAgentId?: number };
+
+    const perm = await verifyAgentPermission(editorAgentId, "canPayFees");
+    if (!perm.allowed) { res.status(403).json({ error: perm.error }); return; }
+
     const [current] = await db.select().from(beneficiariesTable).where(eq(beneficiariesTable.id, id)).limit(1);
     if (!current) { res.status(404).json({ error: "المستفيد غير موجود" }); return; }
 
@@ -360,6 +494,15 @@ router.post("/beneficiaries/:id/pay-transaction-fee", async (req, res): Promise<
 
       await logTransaction(id, "pay_transaction_fee_partial", String(paidNum), `سداد جزئي لمبلغ المعاملة: تم سداد ${formattedPaid} ر.س (المتبقي: ${formattedRemaining} ر.س)`);
 
+      await logAudit({
+        action: "pay_transaction_fee_partial",
+        performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+        performerId: editorAgentId ?? null,
+        targetType: "beneficiary",
+        targetId: id,
+        details: { paidAmount: paidNum, remaining: remainingNum },
+      });
+
       res.json(updated);
     } else {
       // Full payment
@@ -380,6 +523,15 @@ router.post("/beneficiaries/:id/pay-transaction-fee", async (req, res): Promise<
       });
 
       await logTransaction(id, "pay_transaction_fee", String(currentNum), `تأكيد سداد مبلغ المعاملة بالكامل: ${formattedPaid} ر.س`);
+
+      await logAudit({
+        action: "pay_transaction_fee_full",
+        performedBy: perm.agent ? `وكيل: ${perm.agent.name}` : "مدير النظام",
+        performerId: editorAgentId ?? null,
+        targetType: "beneficiary",
+        targetId: id,
+        details: { paidAmount: currentNum },
+      });
 
       res.json(updated);
     }

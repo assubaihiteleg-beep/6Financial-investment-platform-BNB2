@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "beneficiary": {
+      "title": "Beneficiary",
+      "description": "Financial platform beneficiary details and account status",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "accountHolder": { "type": "string" },
+        "iban": { "type": "string" },
+        "phone": { "type": "string" },
+        "profits": { "type": "string" },
+        "subscription": { "type": "string" },
+        "fees": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "disabled"] }
+      },
+      "required": ["username", "name", "status"]
+    },
+    "agent": {
+      "title": "Agent",
+      "description": "Financial platform agent with quota and permissions",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "frozen", "disabled"] },
+        "maxBeneficiariesQuota": { "type": "number" }
+      },
+      "required": ["username", "name", "status"]
+    }
+  },
+  "firestore": {
+    "/beneficiaries/{beneficiaryId}": {
+      "schema": { "$ref": "#/entities/beneficiary" },
+      "description": "Collection of beneficiaries and their profiles"
+    },
+    "/agents/{agentId}": {
+      "schema": { "$ref": "#/entities/agent" },
+      "description": "Collection of authorized financial platform agents"
+    }
+  }
+}

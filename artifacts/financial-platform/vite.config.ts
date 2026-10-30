@@ -53,6 +53,28 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    sourcemap: false,
+    cssMinify: true,
+    reportCompressedSize: false,
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      maxParallelFileOps: 2,
+      treeshake: true,
+      output: {
+        compact: true,
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (id.includes("firebase")) {
+              return "vendor-firebase";
+            }
+            if (id.includes("react") || id.includes("react-dom") || id.includes("scheduler")) {
+              return "vendor-react";
+            }
+            return "vendor-core";
+          }
+        },
+      },
+    },
   },
   server: {
     port,

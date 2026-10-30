@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Agent, AgentChangePasswordModal } from "./AgentManagement";
 import { BeneficiaryFilterBar, FilterState, defaultFilterState } from "./BeneficiaryFilterBar";
+import { subscribeToAgentBeneficiaries, subscribeToSingleAgent } from "../lib/firestoreRealtime";
 
 export interface Beneficiary {
   id: string;
@@ -167,8 +168,73 @@ export function AgentDashboard({
   }, [initialAgent.id]);
 
   useEffect(() => {
+    let isMounted = true;
     void loadData();
-  }, [loadData]);
+
+    // 1. Subscribe to real-time agent profile changes (quota, status, permissions)
+    const unsubAgent = subscribeToSingleAgent(initialAgent.id, (freshAgent) => {
+      if (!isMounted) return;
+      setAgent((prev) => ({ ...prev, ...freshAgent }));
+    });
+
+    // 2. Subscribe to real-time beneficiaries assigned to this agent
+    const unsubBeneficiaries = subscribeToAgentBeneficiaries(initialAgent.id, (realtimeDocs) => {
+      if (!isMounted) return;
+      const mapped: Beneficiary[] = realtimeDocs.map((u) => ({
+        id: String(u.id),
+        username: u.username,
+        name: u.name,
+        profits: u.profits,
+        subscription: u.subscription,
+        fees: u.fees,
+        accountHolder: u.accountHolder,
+        iban: u.iban,
+        phone: u.phone,
+        status: (u.status === "disabled" ? "disabled" : "active") as "active" | "disabled",
+        loginTitle: u.loginTitle ?? "",
+        loginSlug: u.loginSlug ?? "",
+        telegramLink: u.telegramLink ?? "",
+        withdrawalFeeStatus:
+          u.withdrawalFeeStatus === "paid"
+            ? "paid"
+            : u.withdrawalFeeStatus === "partial"
+            ? "partial"
+            : "unpaid",
+        withdrawalFeePaidAt: u.withdrawalFeePaidAt ?? null,
+        plainPassword: u.plainPassword ?? "",
+        phase1Visible: u.phase1Visible ?? false,
+        phase2Visible: u.phase2Visible ?? false,
+        liberationFee: u.liberationFee ?? "0",
+        liberationFeeStatus:
+          u.liberationFeeStatus === "paid"
+            ? "paid"
+            : u.liberationFeeStatus === "partial"
+            ? "partial"
+            : "unpaid",
+        liberationFeePaidAt: u.liberationFeePaidAt ?? null,
+        transactionFee: u.transactionFee ?? "0",
+        transactionFeeStatus:
+          u.transactionFeeStatus === "paid"
+            ? "paid"
+            : u.transactionFeeStatus === "partial"
+            ? "partial"
+            : "unpaid",
+        transactionFeePaidAt: u.transactionFeePaidAt ?? null,
+        phase3Visible: u.phase3Visible ?? false,
+        agentId: u.agentId ?? null,
+        agentName: u.agentName ?? null,
+        createdAt: u.createdAt,
+      }));
+      setBeneficiaries(mapped);
+      setLoading(false);
+    });
+
+    return () => {
+      isMounted = false;
+      unsubAgent();
+      unsubBeneficiaries();
+    };
+  }, [initialAgent.id, loadData]);
 
   // Quota computations
   const currentCount = beneficiaries.length;

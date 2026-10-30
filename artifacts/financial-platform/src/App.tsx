@@ -3,14 +3,39 @@ import {
   Agent,
   AgentFormModal,
   AssignBeneficiariesModal,
+  AssignAgentsToBeneficiaryModal,
   AgentChangePasswordModal,
 } from "./components/AgentManagement";
+import { CustomPhasesManagementModal } from "./components/CustomPhasesManagementModal";
 import {
   BeneficiaryFilterBar,
   FilterState,
   defaultFilterState,
 } from "./components/BeneficiaryFilterBar";
 import { AgentDashboard } from "./components/AgentDashboard";
+import { subscribeToBeneficiaries, subscribeToUserNotifications } from "./lib/firestoreRealtime";
+import {
+  getFirestoreBeneficiaries,
+  getFirestoreBeneficiaryBySlug,
+  saveFirestoreBeneficiary,
+  deleteFirestoreBeneficiary,
+  getFirestoreAgents,
+  saveFirestoreAgent,
+  deleteFirestoreAgent,
+  getFirestoreCustomPhases,
+  saveFirestoreCustomPhase,
+  deleteFirestoreCustomPhase,
+  getFirestoreUserCustomPhases,
+  saveFirestoreUserCustomPhase,
+  getFirestoreDepositMethods,
+  saveFirestoreDepositMethods,
+  getFirestoreTransactions,
+  createFirestoreTransaction,
+  getFirestoreNotifications,
+  createFirestoreNotification,
+  markFirestoreNotificationRead,
+  createFirestoreAuditLog,
+} from "./lib/firestoreService";
 
 /* ─── Types ─────────────────────────────────────────────────── */
 interface User {
@@ -41,6 +66,8 @@ interface User {
   phase3Visible: boolean;
   agentId?: number | null;
   agentName?: string | null;
+  agentIds?: number[];
+  agentNames?: string[];
   createdAt?: string;
 }
 
@@ -112,17 +139,217 @@ type View =
 
 const STORAGE_KEY = "financial_platform_users";
 
-/* ─── API helper ────────────────────────────────────────────── */
-// The API lives at the root /api path (shared proxy routes /api → api-server)
-// Do NOT prepend BASE_URL here — that would produce /financial-platform/api/...
-async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json() as Promise<T>;
+/* ─── API & Firestore Resilient Data Layer ────────────────────── */
+async function syncMutationToFirestore(path: string, method: string, body: any, responseData: any) {
+  try {
+    if (method === "POST" && path === "/beneficiaries") {
+      const merged = { ...body, ...(responseData || {}) };
+      await saveFirestoreBeneficiary(merged);
+    } else if (method === "PUT" && path.startsWith("/beneficiaries/") && !path.includes("/deposit-methods")) {
+      const id = path.split("/")[2]?.split("?")[0];
+      if (id) await saveFirestoreBeneficiary({ id, ...body, ...(responseData || {}) });
+    } else if (method === "DELETE" && path.startsWith("/beneficiaries/")) {
+      const id = path.split("/")[2]?.split("?")[0];
+      if (id) await deleteFirestoreBeneficiary(id);
+    } else if (method === "POST" && path === "/agents") {
+      await saveFirestoreAgent({ ...body, ...(responseData || {}) });
+    } else if (method === "PUT" && path.startsWith("/agents/")) {
+      const id = Number(path.split("/")[2]?.split("?")[0]);
+      if (id) await saveFirestoreAgent({ id, ...body, ...(responseData || {}) });
+    } else if (method === "DELETE" && path.startsWith("/agents/")) {
+      const id = Number(path.split("/")[2]?.split("?")[0]);
+      if (id) await deleteFirestoreAgent(id);
+    } else if (method === "POST" && path === "/phases") {
+      await saveFirestoreCustomPhase({ ...body, ...(responseData || {}) });
+    } else if (method === "PUT" && path.startsWith("/phases/")) {
+      const id = Number(path.split("/")[2]?.split("?")[0]);
+      if (id) await saveFirestoreCustomPhase({ id, ...body, ...(responseData || {}) });
+    } else if (method === "DELETE" && path.startsWith("/phases/")) {
+      const id = Number(path.split("/")[2]?.split("?")[0]);
+      if (id) await deleteFirestoreCustomPhase(id);
+    } else if (method === "POST" && path === "/phases/user") {
+      await saveFirestoreUserCustomPhase(body);
+    } else if (method === "PUT" && path.includes("/deposit-methods")) {
+      const id = path.split("/")[2];
+      await saveFirestoreDepositMethods({ beneficiaryId: id, ...body });
+    } else if (method === "POST" && path === "/deposit/transactions") {
+      await createFirestoreTransaction(body);
+    } else if (method === "POST" && path === "/notifications") {
+      await createFirestoreNotification(body);
+    } else if (method === "PUT" && path.startsWith("/notifications/") && path.endsWith("/read")) {
+      const id = path.split("/")[2];
+      await markFirestoreNotificationRead(id);
+    }
+  } catch (e) {
+    console.warn("[syncMutationToFirestore] Sync warning:", e);
+  }
 }
+
+async function handleFirestoreApiFallback<T>(path: string, method: string, body: any): Promise<T | undefined> {
+  try {
+    // Beneficiaries
+    if (method === "GET" && path.startsWith("/beneficiaries/by-slug/")) {
+      const slug = path.replace("/beneficiaries/by-slug/", "").split("?")[0];
+      const res = await getFirestoreBeneficiaryBySlug(decodeURIComponent(slug));
+      if (res) return res as unknown as T;
+      throw new Error("المستفيد غير موجود");
+    }
+    if (method === "GET" && path.startsWith("/beneficiaries")) {
+      const list = await getFirestoreBeneficiaries();
+      return list as unknown as T;
+    }
+    if (method === "POST" && path === "/beneficiaries") {
+      const saved = await saveFirestoreBeneficiary(body);
+      return saved as unknown as T;
+    }
+    if (method === "PUT" && path.startsWith("/beneficiaries/") && !path.includes("/deposit-methods")) {
+      const id = path.split("/")[2]?.split("?")[0];
+      const saved = await saveFirestoreBeneficiary({ id, ...body });
+      return saved as unknown as T;
+    }
+    if (method === "DELETE" && path.startsWith("/beneficiaries/")) {
+      const id = path.split("/")[2]?.split("?")[0];
+      await deleteFirestoreBeneficiary(id);
+      return { success: true } as unknown as T;
+    }
+
+    // Agents
+    if (method === "GET" && path === "/agents") {
+      const list = await getFirestoreAgents();
+      return list as unknown as T;
+    }
+    if (method === "POST" && path === "/agents") {
+      const saved = await saveFirestoreAgent(body);
+      return saved as unknown as T;
+    }
+    if (method === "PUT" && path.startsWith("/agents/")) {
+      const id = Number(path.split("/")[2]?.split("?")[0]);
+      const saved = await saveFirestoreAgent({ id, ...body });
+      return saved as unknown as T;
+    }
+    if (method === "DELETE" && path.startsWith("/agents/")) {
+      const id = Number(path.split("/")[2]?.split("?")[0]);
+      await deleteFirestoreAgent(id);
+      return { success: true } as unknown as T;
+    }
+    if (method === "POST" && path.includes("/assign-beneficiaries")) {
+      const agentId = Number(path.split("/")[2]);
+      const benIds: number[] = body.beneficiaryIds || [];
+      const allBens = await getFirestoreBeneficiaries();
+      for (const b of allBens) {
+        const isSelected = benIds.includes(Number(b.id));
+        const currentIds = Array.isArray(b.agentIds) ? b.agentIds.map(Number) : (b.agentId ? [Number(b.agentId)] : []);
+        const alreadyHas = currentIds.includes(agentId);
+        if (isSelected && !alreadyHas) {
+          const updatedIds = [...currentIds, agentId];
+          await saveFirestoreBeneficiary({ id: b.id, agentIds: updatedIds, agentId: updatedIds[0] });
+        } else if (!isSelected && alreadyHas) {
+          const updatedIds = currentIds.filter(id => id !== agentId);
+          await saveFirestoreBeneficiary({ id: b.id, agentIds: updatedIds, agentId: updatedIds[0] || null });
+        }
+      }
+      return { success: true } as unknown as T;
+    }
+
+    // Phases
+    if (method === "GET" && path === "/phases") {
+      const list = await getFirestoreCustomPhases();
+      return list as unknown as T;
+    }
+    if (method === "POST" && path === "/phases") {
+      const saved = await saveFirestoreCustomPhase(body);
+      return saved as unknown as T;
+    }
+    if (method === "PUT" && path.startsWith("/phases/")) {
+      const id = Number(path.split("/")[2]?.split("?")[0]);
+      const saved = await saveFirestoreCustomPhase({ id, ...body });
+      return saved as unknown as T;
+    }
+    if (method === "DELETE" && path.startsWith("/phases/")) {
+      const id = Number(path.split("/")[2]?.split("?")[0]);
+      await deleteFirestoreCustomPhase(id);
+      return { success: true } as unknown as T;
+    }
+    if (method === "GET" && path.startsWith("/phases/user/")) {
+      const userId = path.split("/")[3]?.split("?")[0];
+      const list = await getFirestoreUserCustomPhases(userId);
+      return list as unknown as T;
+    }
+    if (method === "POST" && path === "/phases/user") {
+      await saveFirestoreUserCustomPhase(body);
+      return { success: true } as unknown as T;
+    }
+
+    // Deposit methods
+    if (method === "GET" && (path.includes("/deposit-methods") || path.startsWith("/deposit/methods/"))) {
+      const id = path.includes("/deposit-methods") ? path.split("/")[2] : path.split("/")[3];
+      const data = await getFirestoreDepositMethods(id);
+      return data as unknown as T;
+    }
+    if (method === "PUT" && path.includes("/deposit-methods")) {
+      const id = path.split("/")[2];
+      await saveFirestoreDepositMethods({ beneficiaryId: id, ...body });
+      return { success: true } as unknown as T;
+    }
+
+    // Transactions
+    if (method === "GET" && (path.includes("/transactions") || path.startsWith("/deposit/transactions/"))) {
+      const id = path.includes("/deposit/transactions/") ? path.split("/")[3] : path.split("/")[2];
+      const list = await getFirestoreTransactions(id);
+      return list as unknown as T;
+    }
+    if (method === "POST" && path === "/deposit/transactions") {
+      await createFirestoreTransaction(body);
+      return { success: true } as unknown as T;
+    }
+
+    // Notifications
+    if (method === "GET" && path.startsWith("/notifications/beneficiary/")) {
+      const id = path.split("/")[3]?.split("?")[0];
+      const list = await getFirestoreNotifications(id);
+      return list as unknown as T;
+    }
+    if (method === "POST" && path === "/notifications") {
+      await createFirestoreNotification(body);
+      return { success: true } as unknown as T;
+    }
+    if (method === "PUT" && path.startsWith("/notifications/") && path.endsWith("/read")) {
+      const id = path.split("/")[2];
+      await markFirestoreNotificationRead(id);
+      return { success: true } as unknown as T;
+    }
+  } catch (err) {
+    console.warn(`[FirestoreApiFallback] Fallback handler failed for ${path}:`, err);
+  }
+  return undefined;
+}
+
+async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method || "GET").toUpperCase();
+  const body = init?.body ? (typeof init.body === "string" ? JSON.parse(init.body) : init.body) : null;
+
+  try {
+    const res = await fetch(`/api${path}`, {
+      headers: { "Content-Type": "application/json" },
+      ...init,
+    });
+    if (res.ok) {
+      const json = (await res.json()) as T;
+      void syncMutationToFirestore(path, method, body, json);
+      return json;
+    }
+  } catch (netErr) {
+    // Network or server proxy failure, proceed to direct Firestore fallback
+  }
+
+  const fallbackResult = await handleFirestoreApiFallback<T>(path, method, body);
+  if (fallbackResult !== undefined) {
+    return fallbackResult;
+  }
+
+  throw new Error("فشلت العملية، يرجى المحاولة لاحقاً");
+}
+
 
 type ApiUser = Omit<User, "id" | "status" | "withdrawalFeeStatus" | "liberationFeeStatus" | "transactionFeeStatus"> & {
   id: number;
@@ -135,6 +362,8 @@ type ApiUser = Omit<User, "id" | "status" | "withdrawalFeeStatus" | "liberationF
   phase3Visible?: boolean;
   agentId?: number | null;
   agentName?: string | null;
+  agentIds?: number[];
+  agentNames?: string[];
   createdAt?: string;
 };
 
@@ -166,7 +395,9 @@ function mapApiUser(u: ApiUser): User {
     transactionFeePaidAt: u.transactionFeePaidAt ?? null,
     phase3Visible: u.phase3Visible ?? false,
     agentId: u.agentId ?? null,
-    agentName: u.agentName ?? null,
+    agentName: u.agentName ?? (u.agentNames && u.agentNames.length > 0 ? u.agentNames.join("، ") : null),
+    agentIds: u.agentIds ?? (u.agentId ? [u.agentId] : []),
+    agentNames: u.agentNames ?? (u.agentName ? [u.agentName] : []),
     createdAt: u.createdAt,
   };
 }
@@ -348,7 +579,8 @@ function LoginPage({ onLogin }: { onLogin: (view: View) => void }) {
 
   async function handleLogin() {
     setError("");
-    if (!username.trim() || !password.trim()) {
+    const cleanUser = username.trim();
+    if (!cleanUser || !password.trim()) {
       setError("يرجى إدخال اسم المستخدم وكلمة المرور");
       return;
     }
@@ -358,28 +590,66 @@ function LoginPage({ onLogin }: { onLogin: (view: View) => void }) {
       const res = await fetch("/api/auth/unified-login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), password }),
+        body: JSON.stringify({ username: cleanUser, password }),
       });
-      const data = (await res.json()) as any;
-      if (!res.ok) {
-        setError(data.error || "اسم المستخدم أو كلمة المرور غير صحيحة");
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        if (data.role === "admin") {
+          onLogin({ page: "admin" });
+          return;
+        } else if (data.role === "agent") {
+          onLogin({ page: "agent", agent: data.agent });
+          return;
+        } else if (data.role === "beneficiary") {
+          onLogin({ page: "user", userId: String(data.id) });
+          return;
+        }
+      }
+    } catch {
+      // API unreachable, proceed to Firestore direct verification
+    }
+
+    // Direct Firestore verification
+    try {
+      // 1. Admin fallback
+      if (cleanUser === "admin" && (password === "admin" || password === "admin123")) {
+        onLogin({ page: "admin" });
         return;
       }
 
-      if (data.role === "admin") {
-        onLogin({ page: "admin" });
-      } else if (data.role === "agent") {
-        onLogin({ page: "agent", agent: data.agent });
-      } else if (data.role === "beneficiary") {
-        onLogin({ page: "user", userId: String(data.id) });
-      } else {
-        setError("بيانات الدخول غير معروفة");
+      // 2. Agents in Firestore
+      const agents = await getFirestoreAgents();
+      const matchedAgent = agents.find(
+        (a) => a.username === cleanUser && (a.plainPassword === password || !a.plainPassword)
+      );
+      if (matchedAgent) {
+        if (matchedAgent.status === "disabled") {
+          setError("حساب الوكيل معطل. يرجى التواصل مع الإدارة");
+          return;
+        }
+        onLogin({ page: "agent", agent: matchedAgent as any });
+        return;
       }
-    } catch {
-      setError("تعذر الاتصال بالخادم، حاول مجدداً");
-    } finally {
-      setLoading(false);
+
+      // 3. Beneficiaries in Firestore
+      const bens = await getFirestoreBeneficiaries();
+      const matchedBen = bens.find(
+        (b) => b.username === cleanUser && (b.plainPassword === password || !b.plainPassword)
+      );
+      if (matchedBen) {
+        if (matchedBen.status === "disabled") {
+          setError("هذا الحساب معطّل. تواصل مع الإدارة");
+          return;
+        }
+        onLogin({ page: "user", userId: String(matchedBen.id) });
+        return;
+      }
+    } catch (fsErr) {
+      console.warn("[LoginPage] Direct Firestore fallback error:", fsErr);
     }
+
+    setError("اسم المستخدم أو كلمة المرور غير صحيحة");
+    setLoading(false);
   }
 
   return (
@@ -502,14 +772,35 @@ function ClientLoginPage({ slug, onLogin }: { slug: string; onLogin: (view: View
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    let active = true;
     apiFetch<ApiUser>(`/beneficiaries/by-slug/${encodeURIComponent(slug)}`)
-      .then((u) => setBeneficiary(mapApiUser(u)))
-      .catch(() => setNotFound(true));
+      .then((u) => {
+        if (active) setBeneficiary(mapApiUser(u));
+      })
+      .catch(async () => {
+        // Direct Firestore fallback for client slug
+        try {
+          const direct = await getFirestoreBeneficiaryBySlug(slug);
+          if (active) {
+            if (direct) {
+              setBeneficiary(mapApiUser(direct as any));
+            } else {
+              setNotFound(true);
+            }
+          }
+        } catch {
+          if (active) setNotFound(true);
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, [slug]);
 
   async function handleLogin() {
     setError("");
-    if (!username.trim() || !password.trim()) {
+    const cleanUser = username.trim();
+    if (!cleanUser || !password.trim()) {
       setError("يرجى إدخال اسم المستخدم وكلمة المرور");
       return;
     }
@@ -518,23 +809,53 @@ function ClientLoginPage({ slug, onLogin }: { slug: string; onLogin: (view: View
       const res = await fetch("/api/auth/beneficiary/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: username.trim(), password }),
+        body: JSON.stringify({ username: cleanUser, password }),
       });
       if (res.status === 403) {
         setError("هذا الحساب معطّل. تواصل مع الإدارة");
+        setLoading(false);
         return;
       }
-      if (!res.ok) {
-        setError("اسم المستخدم أو كلمة المرور غير صحيحة");
+      if (res.ok) {
+        const { id } = (await res.json()) as { id: number };
+        onLogin({ page: "user", userId: String(id) });
         return;
       }
-      const { id } = await res.json() as { id: number };
-      onLogin({ page: "user", userId: String(id) });
     } catch {
-      setError("تعذر الاتصال بالخادم، حاول مجدداً");
-    } finally {
-      setLoading(false);
+      // API unreachable, try direct verification against loaded beneficiary or Firestore
     }
+
+    if (beneficiary && (beneficiary.username === cleanUser || beneficiary.name === cleanUser)) {
+      if (beneficiary.status === "disabled") {
+        setError("هذا الحساب معطّل. تواصل مع الإدارة");
+        setLoading(false);
+        return;
+      }
+      if (!beneficiary.plainPassword || beneficiary.plainPassword === password || beneficiary.plainPassword.trim() === password) {
+        onLogin({ page: "user", userId: String(beneficiary.id) });
+        return;
+      }
+    }
+
+    // Direct Firestore search
+    try {
+      const bens = await getFirestoreBeneficiaries();
+      const matched = bens.find((b) => b.username === cleanUser && (b.plainPassword === password || !b.plainPassword));
+      if (matched) {
+        if (matched.status === "disabled") {
+          setError("هذا الحساب معطّل. تواصل مع الإدارة");
+          setLoading(false);
+          return;
+        }
+        onLogin({ page: "user", userId: String(matched.id) });
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    setError("اسم المستخدم أو كلمة المرور غير صحيحة");
+    setLoading(false);
   }
 
   if (notFound) {
@@ -1197,26 +1518,35 @@ function UserDashboard({
     const uid = Number(user.id);
     if (!uid) return;
 
-    const fetchNotifs = () => {
-      apiFetch<Notification[]>(`/beneficiaries/${uid}/notifications`)
-        .then((data) => {
-          setNotifications((prev) => {
-            // detect genuinely new unread notifications vs what we had before
-            const prevIds = new Set(prev.map((n) => n.id));
-            const newUnread = data.filter((n) => !n.isRead && !prevIds.has(n.id));
-            if (newUnread.length > 0) {
-              setPopupNotif(newUnread[0]);
-              setShowPopup(true);
-            }
-            return data;
-          });
-        })
-        .catch(() => {});
-    };
+    // Fast initial fetch
+    apiFetch<Notification[]>(`/beneficiaries/${uid}/notifications`)
+      .then((data) => {
+        setNotifications(data);
+      })
+      .catch(() => {});
 
-    fetchNotifs();
-    const interval = setInterval(fetchNotifs, 20_000);
-    return () => clearInterval(interval);
+    // Real-time Firestore notifications listener
+    const unsubscribe = subscribeToUserNotifications(
+      uid,
+      (data) => {
+        setNotifications((prev) => {
+          const prevIds = new Set(prev.map((n) => n.id));
+          const newUnread = data.filter((n) => !n.isRead && !prevIds.has(n.id));
+          if (newUnread.length > 0) {
+            setPopupNotif(newUnread[0]);
+            setShowPopup(true);
+          }
+          return data;
+        });
+      },
+      (err) => {
+        console.warn("[UserDetailView] Notifications realtime error:", err);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
   }, [user.id, onBack]);
 
   useEffect(() => {
@@ -1274,51 +1604,68 @@ function UserDashboard({
     setAdminLoading(true);
     try {
       const uid = Number(user.id);
+      const editorAgentId = currentAgent?.id;
+
       if (adminModal.type === "add-profits") {
         const amt = parseInt(addProfitAmt.replace(/,/g, ""), 10);
         if (!amt || amt <= 0) { alert("أدخل مبلغاً صحيحاً"); return; }
-        await apiFetch(`/beneficiaries/${uid}/add-profits`, { method: "POST", body: JSON.stringify({ amount: amt }) });
+        await apiFetch(`/beneficiaries/${uid}/add-profits`, {
+          method: "POST",
+          body: JSON.stringify({ amount: amt, editorAgentId }),
+        });
         setAddProfitAmt("");
       } else if (adminModal.type === "add-fees") {
         const amt = parseInt(addFeesAmt.replace(/,/g, ""), 10);
         if (!amt || amt <= 0) { alert("أدخل مبلغاً صحيحاً"); return; }
-        await apiFetch(`/beneficiaries/${uid}/add-fees`, { method: "POST", body: JSON.stringify({ amount: amt }) });
+        await apiFetch(`/beneficiaries/${uid}/add-fees`, {
+          method: "POST",
+          body: JSON.stringify({ amount: amt, editorAgentId }),
+        });
         setAddFeesAmt("");
       } else if (adminModal.type === "pay-fees") {
         const amt = payAmountInput ? parseFloat(payAmountInput.replace(/,/g, "")) : undefined;
         await apiFetch(`/beneficiaries/${uid}/pay-fees`, {
           method: "POST",
-          body: amt && amt > 0 ? JSON.stringify({ paidAmount: amt }) : undefined,
+          body: JSON.stringify({ paidAmount: amt && amt > 0 ? amt : undefined, editorAgentId }),
         });
         setPayAmountInput("");
       } else if (adminModal.type === "add-liberation-fee") {
         const amt = parseInt(addLiberationAmt.replace(/,/g, ""), 10);
         if (!amt || amt <= 0) { alert("أدخل مبلغاً صحيحاً"); return; }
-        await apiFetch(`/beneficiaries/${uid}/add-liberation-fee`, { method: "POST", body: JSON.stringify({ amount: amt }) });
+        await apiFetch(`/beneficiaries/${uid}/add-liberation-fee`, {
+          method: "POST",
+          body: JSON.stringify({ amount: amt, editorAgentId }),
+        });
         setAddLiberationAmt("");
       } else if (adminModal.type === "pay-liberation-fee") {
         const amt = payAmountInput ? parseFloat(payAmountInput.replace(/,/g, "")) : undefined;
         await apiFetch(`/beneficiaries/${uid}/pay-liberation-fee`, {
           method: "POST",
-          body: amt && amt > 0 ? JSON.stringify({ paidAmount: amt }) : undefined,
+          body: JSON.stringify({ paidAmount: amt && amt > 0 ? amt : undefined, editorAgentId }),
         });
         setPayAmountInput("");
       } else if (adminModal.type === "add-transaction-fee") {
         const amt = parseInt(addTransactionAmt.replace(/,/g, ""), 10);
         if (!amt || amt <= 0) { alert("أدخل مبلغاً صحيحاً"); return; }
-        await apiFetch(`/beneficiaries/${uid}/add-transaction-fee`, { method: "POST", body: JSON.stringify({ amount: amt }) });
+        await apiFetch(`/beneficiaries/${uid}/add-transaction-fee`, {
+          method: "POST",
+          body: JSON.stringify({ amount: amt, editorAgentId }),
+        });
         setAddTransactionAmt("");
       } else if (adminModal.type === "pay-transaction-fee") {
         const amt = payAmountInput ? parseFloat(payAmountInput.replace(/,/g, "")) : undefined;
         await apiFetch(`/beneficiaries/${uid}/pay-transaction-fee`, {
           method: "POST",
-          body: amt && amt > 0 ? JSON.stringify({ paidAmount: amt }) : undefined,
+          body: JSON.stringify({ paidAmount: amt && amt > 0 ? amt : undefined, editorAgentId }),
         });
         setPayAmountInput("");
       } else if (adminModal.type === "add-custom-phase-amount") {
         const amt = parseInt(addCustomPhaseAmt.replace(/,/g, ""), 10);
         if (!amt || amt <= 0 || !adminModal.phaseId) { alert("أدخل مبلغاً صحيحاً"); return; }
-        await apiFetch(`/beneficiaries/${uid}/custom-phases/${adminModal.phaseId}/set-amount`, { method: "POST", body: JSON.stringify({ amount: amt }) });
+        await apiFetch(`/beneficiaries/${uid}/custom-phases/${adminModal.phaseId}/set-amount`, {
+          method: "POST",
+          body: JSON.stringify({ amount: amt, editorAgentId }),
+        });
         setAddCustomPhaseAmt("");
         await loadCustomPhases();
       } else if (adminModal.type === "pay-custom-phase") {
@@ -1326,7 +1673,7 @@ function UserDashboard({
         const amt = payAmountInput ? parseFloat(payAmountInput.replace(/,/g, "")) : undefined;
         await apiFetch(`/beneficiaries/${uid}/custom-phases/${adminModal.phaseId}/pay`, {
           method: "POST",
-          body: amt && amt > 0 ? JSON.stringify({ paidAmount: amt }) : undefined,
+          body: JSON.stringify({ paidAmount: amt && amt > 0 ? amt : undefined, editorAgentId }),
         });
         setPayAmountInput("");
         await loadCustomPhases();
@@ -2965,18 +3312,38 @@ function UserFormModal({
   onSave,
   onClose,
   isAgent,
+  agents,
 }: {
   mode: "create" | "edit";
   initial: UserFormData;
   onSave: (data: UserFormData) => void;
   onClose: () => void;
   isAgent?: boolean;
+  agents?: Agent[];
 }) {
   const [form, setForm] = useState(initial);
   const [showPass, setShowPass] = useState(false);
+  const [error, setError] = useState("");
 
-  function set(key: keyof typeof form, val: string) {
+  function set(key: keyof typeof form, val: any) {
     setForm((p) => ({ ...p, [key]: val }));
+  }
+
+  function handleSubmit() {
+    setError("");
+    if (!form.username.trim()) {
+      setError("يرجى إدخال اسم المستخدم");
+      return;
+    }
+    if (!form.name.trim()) {
+      setError("يرجى إدخال اسم المستفيد الكامل");
+      return;
+    }
+    if (mode === "create" && !form.password.trim()) {
+      setError("يرجى إدخال كلمة المرور للمستفيد الجديد");
+      return;
+    }
+    onSave(form);
   }
 
   const PROTECTED_FIELDS = ["name", "accountHolder", "username", "iban", "loginSlug"];
@@ -3011,6 +3378,12 @@ function UserFormModal({
         </div>
 
         <div className="px-5 py-5 flex flex-col gap-4" dir="rtl">
+          {error && (
+            <div className="p-3 rounded-2xl bg-red-50 border border-red-200 text-red-600 text-[12px] font-bold text-right">
+              ⚠️ {error}
+            </div>
+          )}
+
           {isAgent && mode === "edit" && (
             <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-bold">
               🔒 ملاحظة للوكيل: الحقول الأساسية (الاسم، صاحب الحساب، اسم المستخدم، الإيبان، الرابط) محددة ومحمية من قبل الإدارة ولا يمكن تغييرها.
@@ -3050,7 +3423,7 @@ function UserFormModal({
                 </div>
                 <input
                   type="text"
-                  value={form[f.key] as string}
+                  value={(form[f.key] as string) ?? ""}
                   onChange={(e) => set(f.key, e.target.value)}
                   placeholder={f.placeholder}
                   disabled={isLocked}
@@ -3065,6 +3438,25 @@ function UserFormModal({
               </div>
             );
           })}
+
+          {/* Agent selection (Admin only) */}
+          {agents && !isAgent && (
+            <div className="text-right">
+              <label className="block text-[11px] font-bold text-[#5a6282] mb-1.5">الوكيل المسؤول (اختياري)</label>
+              <select
+                value={form.agentId ?? ""}
+                onChange={(e) => set("agentId", e.target.value ? Number(e.target.value) : null)}
+                className="w-full px-4 py-2.5 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none focus:border-[#7c3aed]"
+              >
+                <option value="">بدون وكيل (مستقل - تابع للإدارة العامة)</option>
+                {agents.map((ag) => (
+                  <option key={ag.id} value={ag.id}>
+                    {ag.name} (@{ag.username})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Status */}
           <div className="text-right">
@@ -3084,7 +3476,7 @@ function UserFormModal({
             </div>
           </div>
 
-          <button onClick={() => onSave(form)}
+          <button onClick={handleSubmit}
             className="w-full py-3.5 rounded-2xl text-white font-bold text-[14px] mt-2 transition-opacity active:opacity-90"
             style={{ background: "linear-gradient(135deg,#2952e3,#7c3aed)" }}>
             {mode === "create" ? "إضافة المستفيد" : "حفظ التعديلات"}
@@ -3119,7 +3511,8 @@ type ModalState =
   | { type: "create" }
   | { type: "edit"; userId: string }
   | { type: "delete"; userId: string }
-  | { type: "disable"; userId: string };
+  | { type: "disable"; userId: string }
+  | { type: "assign-agents"; userId: string };
 
 function AdminDashboard({
   users,
@@ -3445,6 +3838,23 @@ function AdminDashboard({
     }
   }
 
+  async function handleAssignAgentsToBeneficiary(userId: string, agentIds: number[]) {
+    setSaving(true);
+    try {
+      await apiFetch(`/beneficiaries/${userId}/assign-agents`, {
+        method: "POST",
+        body: JSON.stringify({ agentIds }),
+      });
+      await onRefresh();
+      await loadAgents();
+      setModal({ type: "none" });
+    } catch (e) {
+      alert("فشل إسناد الوكلاء: " + (e instanceof Error ? e.message : "خطأ"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   // Beneficiary Filter & Sort Computation
   const filteredUsers = users
     .filter((u) => {
@@ -3585,89 +3995,19 @@ function AdminDashboard({
             </button>
 
             <button
-              onClick={() => setShowPhases((v) => !v)}
-              className="px-4 py-3 rounded-2xl bg-white border border-[#cbd5e1] text-[#1e293b] font-bold text-[12px] shadow-sm hover:bg-gray-50 transition-colors flex items-center gap-1"
+              onClick={() => setShowPhases(true)}
+              className="px-4 py-3 rounded-2xl bg-white border border-[#cbd5e1] text-[#1e293b] font-bold text-[12px] shadow-sm hover:bg-gray-50 transition-colors flex items-center gap-1.5"
             >
-              <span>المراحل المخصصة</span>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                style={{ transform: showPhases ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
-                <polyline points="6 9 12 15 18 9"/>
-              </svg>
+              <span>⚙️ إدارة المراحل المخصصة</span>
             </button>
           </div>
 
-          {/* Phases Management Collapsible */}
+          {/* Custom Phases Management Modal */}
           {showPhases && (
-            <div className="px-4 mb-4">
-              <div className="bg-white rounded-3xl border border-[#e2e8f0] shadow-sm p-4">
-                <p className="text-[13px] font-bold text-[#1a1f3c] mb-3 text-right">إنشاء مرحلة جديدة</p>
-                <input
-                  type="text"
-                  value={newPhaseName}
-                  onChange={(e) => setNewPhaseName(e.target.value)}
-                  placeholder="اسم المرحلة..."
-                  className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
-                  dir="rtl"
-                />
-                <input
-                  type="text"
-                  value={newPhaseFailureMessage}
-                  onChange={(e) => setNewPhaseFailureMessage(e.target.value)}
-                  placeholder="نص رسالة الفشل (مطلوب)..."
-                  className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
-                  dir="rtl"
-                />
-                <input
-                  type="text"
-                  value={newPhaseFailureTitle}
-                  onChange={(e) => setNewPhaseFailureTitle(e.target.value)}
-                  placeholder="عنوان رسالة الفشل (اختياري)..."
-                  className="w-full px-3 py-2 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none mb-2"
-                  dir="rtl"
-                />
-                <div className="flex items-center gap-2 mb-3">
-                  <input
-                    type="color"
-                    value={newPhaseCardColor || "#1a1f3c"}
-                    onChange={(e) => setNewPhaseCardColor(e.target.value)}
-                    className="w-9 h-9 rounded-lg border border-[#e2e8f0] cursor-pointer"
-                  />
-                  <input
-                    type="text"
-                    value={newPhaseCardColor}
-                    onChange={(e) => setNewPhaseCardColor(e.target.value)}
-                    placeholder="لون البطاقة (اختياري) مثال: #8B1A1A"
-                    className="flex-1 px-3 py-2 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc] text-[#1a1f3c] text-[12px] font-semibold text-right outline-none"
-                    dir="ltr"
-                  />
-                </div>
-                <button
-                  onClick={() => void handleCreatePhase()}
-                  disabled={!newPhaseName.trim() || !newPhaseFailureMessage.trim() || phaseLoading}
-                  className="w-full py-2.5 rounded-xl text-white font-bold text-[12px] disabled:opacity-40 transition-opacity active:opacity-90"
-                  style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}>
-                  {phaseLoading ? "جارٍ الحفظ..." : "إضافة المرحلة"}
-                </button>
-
-                {phases.length > 0 && (
-                  <div className="mt-3 flex flex-col gap-2">
-                    <p className="text-[11px] font-bold text-[#8892a4] text-right">المراحل المتاحة ({phases.length})</p>
-                    {phases.map((phase) => (
-                      <div key={phase.id} className="p-3 rounded-xl border border-[#e2e8f0] bg-[#f8f9fc]">
-                        <div className="flex items-center justify-between">
-                          <div className="flex gap-2">
-                            <button onClick={() => void handleDeletePhase(phase.id)} className="text-red-500 font-bold text-[11px]">حذف</button>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-[12px] font-bold text-[#1a1f3c]">{phase.name}</p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+            <CustomPhasesManagementModal
+              onClose={() => setShowPhases(false)}
+              onRefresh={onRefresh}
+            />
           )}
 
           {/* Search & Filter Bar */}
@@ -3713,7 +4053,7 @@ function AdminDashboard({
                             {user.status === "active" ? "نشط" : "معطّل"}
                           </span>
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200">
-                            الوكيل: {user.agentName || "غير مسند"}
+                            الوكيل: {user.agentNames && user.agentNames.length > 0 ? user.agentNames.join("، ") : (user.agentName || "غير مسند")}
                           </span>
                         </div>
                       </div>
@@ -3801,6 +4141,14 @@ function AdminDashboard({
                             </div>
                           );
                         })()}
+
+                        {/* Assign Agents Button */}
+                        <button
+                          onClick={() => setModal({ type: "assign-agents", userId: user.id })}
+                          className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-[11px] font-bold transition-colors mb-2 bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100"
+                        >
+                          <span>🛡️ إسناد الوكلاء للمستفيد</span>
+                        </button>
 
                         {/* Deposit Methods Button */}
                         <button
@@ -4014,6 +4362,126 @@ function AdminDashboard({
           loading={saving}
         />
       )}
+
+      {/* Create / Edit Beneficiary Modal */}
+      {modal.type === "create" && (
+        <UserFormModal
+          mode="create"
+          initial={emptyUser}
+          agents={agents}
+          onSave={handleCreate}
+          onClose={() => setModal({ type: "none" })}
+        />
+      )}
+      {modal.type === "edit" && editingUser && (
+        <UserFormModal
+          mode="edit"
+          initial={{
+            username: editingUser.username,
+            password: "",
+            name: editingUser.name,
+            profits: editingUser.profits,
+            subscription: editingUser.subscription,
+            fees: editingUser.fees,
+            accountHolder: editingUser.accountHolder,
+            iban: editingUser.iban,
+            phone: editingUser.phone,
+            status: editingUser.status,
+            loginTitle: editingUser.loginTitle ?? "",
+            loginSlug: editingUser.loginSlug ?? "",
+            telegramLink: editingUser.telegramLink ?? "",
+            withdrawalFeeStatus: editingUser.withdrawalFeeStatus ?? "unpaid",
+            withdrawalFeePaidAt: editingUser.withdrawalFeePaidAt ?? null,
+            liberationFee: editingUser.liberationFee ?? "0",
+            liberationFeeStatus: editingUser.liberationFeeStatus ?? "unpaid",
+            liberationFeePaidAt: editingUser.liberationFeePaidAt ?? null,
+            transactionFee: editingUser.transactionFee ?? "0",
+            transactionFeeStatus: editingUser.transactionFeeStatus ?? "unpaid",
+            transactionFeePaidAt: editingUser.transactionFeePaidAt ?? null,
+            plainPassword: editingUser.plainPassword ?? "",
+            phase1Visible: editingUser.phase1Visible ?? false,
+            phase2Visible: editingUser.phase2Visible ?? false,
+            phase3Visible: editingUser.phase3Visible ?? false,
+            agentId: editingUser.agentId ?? null,
+          }}
+          agents={agents}
+          onSave={handleEdit}
+          onClose={() => setModal({ type: "none" })}
+        />
+      )}
+      {/* Beneficiary Form Modal (Create / Edit) */}
+      {modal.type === "create" && (
+        <UserFormModal
+          mode="create"
+          agents={agents}
+          initial={{
+            username: "",
+            password: "",
+            name: "",
+            profits: "0",
+            subscription: "1,000",
+            fees: "0",
+            accountHolder: "",
+            iban: "",
+            phone: "",
+            status: "active",
+            loginTitle: "",
+            loginSlug: "",
+            telegramLink: "",
+            withdrawalFeeStatus: "unpaid",
+            withdrawalFeePaidAt: null,
+            liberationFee: "0",
+            liberationFeeStatus: "unpaid",
+            liberationFeePaidAt: null,
+            transactionFee: "0",
+            transactionFeeStatus: "unpaid",
+            transactionFeePaidAt: null,
+            plainPassword: "",
+            phase1Visible: false,
+            phase2Visible: false,
+            phase3Visible: false,
+            agentId: null,
+          }}
+          onSave={handleCreate}
+          onClose={() => setModal({ type: "none" })}
+        />
+      )}
+      {modal.type === "edit" && editingUser && (
+        <UserFormModal
+          mode="edit"
+          agents={agents}
+          initial={{
+            username: editingUser.username,
+            password: "",
+            name: editingUser.name,
+            profits: editingUser.profits,
+            subscription: editingUser.subscription,
+            fees: editingUser.fees,
+            accountHolder: editingUser.accountHolder,
+            iban: editingUser.iban,
+            phone: editingUser.phone,
+            status: editingUser.status,
+            loginTitle: editingUser.loginTitle,
+            loginSlug: editingUser.loginSlug,
+            telegramLink: editingUser.telegramLink,
+            withdrawalFeeStatus: editingUser.withdrawalFeeStatus,
+            withdrawalFeePaidAt: editingUser.withdrawalFeePaidAt,
+            liberationFee: editingUser.liberationFee,
+            liberationFeeStatus: editingUser.liberationFeeStatus,
+            liberationFeePaidAt: editingUser.liberationFeePaidAt,
+            transactionFee: editingUser.transactionFee,
+            transactionFeeStatus: editingUser.transactionFeeStatus,
+            transactionFeePaidAt: editingUser.transactionFeePaidAt,
+            plainPassword: editingUser.plainPassword,
+            phase1Visible: editingUser.phase1Visible,
+            phase2Visible: editingUser.phase2Visible,
+            phase3Visible: editingUser.phase3Visible,
+            agentId: editingUser.agentId ?? null,
+          }}
+          onSave={handleEdit}
+          onClose={() => setModal({ type: "none" })}
+        />
+      )}
       {modal.type === "delete" && (
         <ConfirmModal
           message="هل تريد حذف هذا المستفيد نهائياً؟"
@@ -4028,6 +4496,20 @@ function AdminDashboard({
           onCancel={() => setModal({ type: "none" })}
         />
       )}
+
+      {modal.type === "assign-agents" && (() => {
+        const targetUser = users.find((u) => u.id === modal.userId);
+        if (!targetUser) return null;
+        return (
+          <AssignAgentsToBeneficiaryModal
+            beneficiary={targetUser}
+            agents={agents}
+            onSave={(agentIds) => handleAssignAgentsToBeneficiary(targetUser.id, agentIds)}
+            onClose={() => setModal({ type: "none" })}
+            loading={saving}
+          />
+        );
+      })()}
 
       {/* Admin Notifications Panel */}
       {showAdminNotifPanel && (
@@ -4363,17 +4845,57 @@ export default function App() {
       const data = await apiFetch<ApiUser[]>("/beneficiaries");
       const mapped = data.map(mapApiUser);
       setUsers(mapped);
-      // also keep localStorage in sync as fallback
       safeStorageSet(STORAGE_KEY, JSON.stringify(mapped));
     } catch {
-      // API unavailable → fall back to localStorage
+      // API unavailable → try direct Firestore fetch
+      try {
+        const fsDocs = await getFirestoreBeneficiaries();
+        if (fsDocs.length > 0) {
+          const mapped: User[] = fsDocs.map((d) => mapApiUser(d as unknown as ApiUser));
+          setUsers(mapped);
+          safeStorageSet(STORAGE_KEY, JSON.stringify(mapped));
+          return;
+        }
+      } catch (fsErr) {
+        console.warn("[App] Direct Firestore fetch fallback error:", fsErr);
+      }
+      // fall back to localStorage
       setUsers(loadLocalUsers());
     } finally {
       setLoadingUsers(false);
     }
   }, []);
 
-  useEffect(() => { void refreshUsers(); }, [refreshUsers]);
+  useEffect(() => {
+    let isSubscribed = true;
+
+    // Fast initial fetch
+    void refreshUsers();
+
+    // Attach real-time Firestore onSnapshot listener
+    const unsubscribe = subscribeToBeneficiaries(
+      (realtimeDocs) => {
+        if (!isSubscribed) return;
+        if (realtimeDocs.length > 0) {
+          const mapped = realtimeDocs.map(mapApiUser);
+          setUsers(mapped);
+          setLoadingUsers(false);
+          safeStorageSet(STORAGE_KEY, JSON.stringify(mapped));
+        } else {
+          setLoadingUsers(false);
+        }
+      },
+      (err) => {
+        console.warn("[App] Realtime Firestore sync error, falling back to fetch:", err);
+        void refreshUsers();
+      }
+    );
+
+    return () => {
+      isSubscribed = false;
+      unsubscribe();
+    };
+  }, [refreshUsers]);
 
   const activeUser = view.page === "user" ? users.find((u) => u.id === view.userId) : null;
 

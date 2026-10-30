@@ -7,20 +7,33 @@ export interface Agent {
   name: string;
   status: "active" | "frozen" | "disabled";
   maxBeneficiariesQuota: number;
+  // Granular permissions
+  canViewBeneficiaries?: boolean;
+  canAddBeneficiaries?: boolean;
   canEditBeneficiaries: boolean;
+  canDeleteBeneficiaries?: boolean;
+  canManageProfits?: boolean;
+  canManageFees?: boolean;
+  canPayFees?: boolean;
+  canManageFinancials?: boolean;
   canManagePhases: boolean;
-  canManageFinancials: boolean;
+  canPayPhases?: boolean;
+  canSendNotifications?: boolean;
+  canViewAccountInfo?: boolean;
+  canEditAccountInfo?: boolean;
   currentBeneficiariesCount?: number;
   createdAt?: string;
   updatedAt?: string;
 }
 
-interface BeneficiaryItem {
+export interface BeneficiaryItem {
   id: string;
   name: string;
   username: string;
   agentId?: number | null;
   agentName?: string | null;
+  agentIds?: number[];
+  agentNames?: string[];
 }
 
 interface AgentFormModalProps {
@@ -37,11 +50,68 @@ export function AgentFormModal({ mode, initialAgent, onSave, onClose, loading }:
   const [password, setPassword] = useState(initialAgent?.plainPassword ?? "");
   const [showPass, setShowPass] = useState(false);
   const [quota, setQuota] = useState(initialAgent?.maxBeneficiariesQuota ?? 5);
-  const [canEdit, setCanEdit] = useState(initialAgent?.canEditBeneficiaries ?? true);
-  const [canPhases, setCanPhases] = useState(initialAgent?.canManagePhases ?? false);
-  const [canFinancials, setCanFinancials] = useState(initialAgent?.canManageFinancials ?? false);
   const [status, setStatus] = useState<"active" | "frozen" | "disabled">(initialAgent?.status ?? "active");
   const [error, setError] = useState("");
+
+  // Granular Permissions States
+  const [canViewBeneficiaries, setCanViewBeneficiaries] = useState(initialAgent?.canViewBeneficiaries ?? true);
+  const [canAddBeneficiaries, setCanAddBeneficiaries] = useState(initialAgent?.canAddBeneficiaries ?? true);
+  const [canEditBeneficiaries, setCanEditBeneficiaries] = useState(initialAgent?.canEditBeneficiaries ?? true);
+  const [canDeleteBeneficiaries, setCanDeleteBeneficiaries] = useState(initialAgent?.canDeleteBeneficiaries ?? false);
+
+  const [canManageProfits, setCanManageProfits] = useState(initialAgent?.canManageProfits ?? (initialAgent?.canManageFinancials ?? false));
+  const [canManageFees, setCanManageFees] = useState(initialAgent?.canManageFees ?? (initialAgent?.canManageFinancials ?? false));
+  const [canPayFees, setCanPayFees] = useState(initialAgent?.canPayFees ?? (initialAgent?.canManageFinancials ?? false));
+
+  const [canManagePhases, setCanManagePhases] = useState(initialAgent?.canManagePhases ?? false);
+  const [canPayPhases, setCanPayPhases] = useState(initialAgent?.canPayPhases ?? false);
+
+  const [canSendNotifications, setCanSendNotifications] = useState(initialAgent?.canSendNotifications ?? true);
+  const [canViewAccountInfo, setCanViewAccountInfo] = useState(initialAgent?.canViewAccountInfo ?? true);
+  const [canEditAccountInfo, setCanEditAccountInfo] = useState(initialAgent?.canEditAccountInfo ?? false);
+
+  function applyPreset(preset: "all" | "none" | "standard") {
+    if (preset === "all") {
+      setCanViewBeneficiaries(true);
+      setCanAddBeneficiaries(true);
+      setCanEditBeneficiaries(true);
+      setCanDeleteBeneficiaries(true);
+      setCanManageProfits(true);
+      setCanManageFees(true);
+      setCanPayFees(true);
+      setCanManagePhases(true);
+      setCanPayPhases(true);
+      setCanSendNotifications(true);
+      setCanViewAccountInfo(true);
+      setCanEditAccountInfo(true);
+    } else if (preset === "none") {
+      setCanViewBeneficiaries(false);
+      setCanAddBeneficiaries(false);
+      setCanEditBeneficiaries(false);
+      setCanDeleteBeneficiaries(false);
+      setCanManageProfits(false);
+      setCanManageFees(false);
+      setCanPayFees(false);
+      setCanManagePhases(false);
+      setCanPayPhases(false);
+      setCanSendNotifications(false);
+      setCanViewAccountInfo(false);
+      setCanEditAccountInfo(false);
+    } else if (preset === "standard") {
+      setCanViewBeneficiaries(true);
+      setCanAddBeneficiaries(true);
+      setCanEditBeneficiaries(true);
+      setCanDeleteBeneficiaries(false);
+      setCanManageProfits(false);
+      setCanManageFees(false);
+      setCanPayFees(false);
+      setCanManagePhases(false);
+      setCanPayPhases(false);
+      setCanSendNotifications(true);
+      setCanViewAccountInfo(true);
+      setCanEditAccountInfo(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -57,10 +127,20 @@ export function AgentFormModal({ mode, initialAgent, onSave, onClose, loading }:
         username: username.trim().toLowerCase(),
         password: password.trim() || undefined,
         maxBeneficiariesQuota: Number(quota),
-        canEditBeneficiaries: canEdit,
-        canManagePhases: canPhases,
-        canManageFinancials: canFinancials,
         status,
+        canViewBeneficiaries,
+        canAddBeneficiaries,
+        canEditBeneficiaries,
+        canDeleteBeneficiaries,
+        canManageProfits,
+        canManageFees,
+        canPayFees,
+        canManageFinancials: canManageProfits || canManageFees || canPayFees,
+        canManagePhases,
+        canPayPhases,
+        canSendNotifications,
+        canViewAccountInfo,
+        canEditAccountInfo,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "فشلت العملية");
@@ -68,24 +148,32 @@ export function AgentFormModal({ mode, initialAgent, onSave, onClose, loading }:
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
       style={{ background: "rgba(10,15,40,0.6)", backdropFilter: "blur(4px)", fontFamily: "'Cairo', sans-serif" }}
       dir="rtl"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-full max-w-md bg-white rounded-3xl overflow-hidden shadow-2xl max-h-[92vh] flex flex-col"
-        style={{ animation: "popIn 0.25s cubic-bezier(.175,.885,.32,1.275)" }}>
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="w-full max-w-lg bg-white rounded-3xl overflow-hidden shadow-2xl max-h-[92vh] flex flex-col"
+        style={{ animation: "popIn 0.25s cubic-bezier(.175,.885,.32,1.275)" }}
+      >
         {/* Header */}
-        <div className="px-5 py-4 border-b border-[#eef0f6] flex items-center justify-between"
-          style={{ background: "linear-gradient(135deg,#1a1f3c,#2952e3)" }}>
-          <button onClick={onClose}
-            className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-colors">
+        <div
+          className="px-5 py-4 border-b border-[#eef0f6] flex items-center justify-between"
+          style={{ background: "linear-gradient(135deg,#1a1f3c,#2952e3)" }}
+        >
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-colors"
+          >
             ✕
           </button>
           <div className="text-right">
             <h3 className="text-[16px] font-extrabold text-white">
               {mode === "create" ? "إضافة وكيل جديد" : "تعديل بيانات وصلاحيات الوكيل"}
             </h3>
-            <p className="text-white/70 text-[11px]">حدد بيانات الدخول والحصة والصلاحيات</p>
+            <p className="text-white/70 text-[11px]">حدد بيانات الدخول والحصة والصلاحيات التفصيلية</p>
           </div>
         </div>
 
@@ -145,7 +233,7 @@ export function AgentFormModal({ mode, initialAgent, onSave, onClose, loading }:
 
           <div>
             <label className="block text-[12px] font-bold text-[#1e293b] mb-1.5">
-              حصة المستفيدين (الحد الأقصى للإضافة) *
+              حصة المستفيدين (الحد الأقصى للإضافة والإسناد) *
             </label>
             <input
               type="number"
@@ -155,7 +243,7 @@ export function AgentFormModal({ mode, initialAgent, onSave, onClose, loading }:
               className="w-full px-3.5 py-2.5 rounded-xl border border-[#cbd5e1] bg-[#f8fafc] text-[#1a1f3c] text-[14px] font-extrabold outline-none focus:border-[#2952e3] transition-colors text-center"
             />
             <p className="text-[10px] text-[#64748b] mt-1">
-              الحد الأقصى لعدد المستفيدين المسموح للوكيل بإضافتهم. قابلة للزيادة من قبلك في أي وقت.
+              الحد الأقصى لعدد المستفيدين المسموح للوكيل بإدارتهم وإضافتهم.
             </p>
           </div>
 
@@ -199,51 +287,180 @@ export function AgentFormModal({ mode, initialAgent, onSave, onClose, loading }:
             </div>
           </div>
 
-          {/* Permissions toggles */}
-          <div className="rounded-2xl p-4 bg-[#f1f5f9] border border-[#e2e8f0] flex flex-col gap-3">
-            <p className="text-[12px] font-extrabold text-[#1e293b] mb-1">صلاحيات الوكيل:</p>
+          {/* Granular Permissions Section */}
+          <div className="rounded-2xl p-4 bg-[#f8fafc] border border-[#e2e8f0] flex flex-col gap-3">
+            <div className="flex items-center justify-between border-b border-[#e2e8f0] pb-2">
+              <span className="text-[13px] font-extrabold text-[#1a1f3c]">الصلاحيات التفصيلية:</span>
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => applyPreset("all")}
+                  className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-bold hover:bg-blue-100"
+                >
+                  الكل
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPreset("standard")}
+                  className="px-2 py-0.5 rounded bg-gray-100 text-gray-700 font-bold hover:bg-gray-200"
+                >
+                  قياسي
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPreset("none")}
+                  className="px-2 py-0.5 rounded bg-red-50 text-red-700 font-bold hover:bg-red-100"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </div>
 
-            <label className="flex items-center gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={canEdit}
-                onChange={(e) => setCanEdit(e.target.checked)}
-                className="w-4 h-4 rounded text-[#2952e3] focus:ring-0 cursor-pointer"
-              />
-              <span className="text-[12px] font-bold text-[#334155]">
-                تعديل بيانات المستفيدين
-              </span>
-            </label>
-            <p className="text-[10px] text-[#64748b] pr-6 -mt-1.5 leading-snug">
-              ملاحظة: الحقول الحساسة (الاسم، صاحب الحساب، اسم المستخدم، الآيبان، الرابط) تظل مقفلة تلقائياً ولا يمكن للوكيل تعديلها إطلاقاً.
-            </p>
+            {/* 1. Beneficiaries Data Section */}
+            <div className="p-3 rounded-xl bg-white border border-[#e2e8f0] flex flex-col gap-2">
+              <p className="text-[11px] font-extrabold text-[#2952e3]">📁 إدارة المستفيدين والبيانات</p>
+              
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canViewBeneficiaries}
+                  onChange={(e) => setCanViewBeneficiaries(e.target.checked)}
+                  className="w-4 h-4 rounded text-[#2952e3]"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">عرض بيانات المستفيدين المسندين</span>
+              </label>
 
-            <label className="flex items-center gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={canPhases}
-                onChange={(e) => setCanPhases(e.target.checked)}
-                className="w-4 h-4 rounded text-[#2952e3] focus:ring-0 cursor-pointer"
-              />
-              <span className="text-[12px] font-bold text-[#334155]">
-                التحكم في البطاقات والمراحل (تفعيل / إخفاء)
-              </span>
-            </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canAddBeneficiaries}
+                  onChange={(e) => setCanAddBeneficiaries(e.target.checked)}
+                  className="w-4 h-4 rounded text-[#2952e3]"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">إضافة مستفيدين جدد (ضمن الحصة)</span>
+              </label>
 
-            <label className="flex items-center gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={canFinancials}
-                onChange={(e) => setCanFinancials(e.target.checked)}
-                className="w-4 h-4 rounded text-[#2952e3] focus:ring-0 cursor-pointer"
-              />
-              <span className="text-[12px] font-bold text-[#334155]">
-                إدارة العمليات المالية والسداد (جزئي أو كامل)
-              </span>
-            </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canEditBeneficiaries}
+                  onChange={(e) => setCanEditBeneficiaries(e.target.checked)}
+                  className="w-4 h-4 rounded text-[#2952e3]"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">تعديل بيانات المستفيدين</span>
+              </label>
+              <p className="text-[9px] text-[#64748b] pr-6 leading-tight">
+                * ملاحظة: الحقول الحساسة (الاسم، الآيبان، صاحب الحساب، اسم المستخدم) مقفلة تلقائياً.
+              </p>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canDeleteBeneficiaries}
+                  onChange={(e) => setCanDeleteBeneficiaries(e.target.checked)}
+                  className="w-4 h-4 rounded text-red-600"
+                />
+                <span className="text-[11px] font-bold text-red-700">حذف المستفيدين (صلاحية حساسة)</span>
+              </label>
+            </div>
+
+            {/* 2. Financial Operations Section */}
+            <div className="p-3 rounded-xl bg-white border border-[#e2e8f0] flex flex-col gap-2">
+              <p className="text-[11px] font-extrabold text-emerald-700">💰 العمليات المالية والسداد</p>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canManageProfits}
+                  onChange={(e) => setCanManageProfits(e.target.checked)}
+                  className="w-4 h-4 rounded text-emerald-600"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">إضافة وتعديل الأرباح</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canManageFees}
+                  onChange={(e) => setCanManageFees(e.target.checked)}
+                  className="w-4 h-4 rounded text-emerald-600"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">إضافة وتعديل الرسوم بمختلف أنواعها</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canPayFees}
+                  onChange={(e) => setCanPayFees(e.target.checked)}
+                  className="w-4 h-4 rounded text-emerald-600"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">تأكيد وسداد الرسوم (كلياً أو جزئياً)</span>
+              </label>
+            </div>
+
+            {/* 3. Custom Phases Section */}
+            <div className="p-3 rounded-xl bg-white border border-[#e2e8f0] flex flex-col gap-2">
+              <p className="text-[11px] font-extrabold text-purple-700">📑 المراحل المخصصة والبطاقات</p>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canManagePhases}
+                  onChange={(e) => setCanManagePhases(e.target.checked)}
+                  className="w-4 h-4 rounded text-purple-600"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">إدارة وإظهار المراحل وتحديد مبالغها</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canPayPhases}
+                  onChange={(e) => setCanPayPhases(e.target.checked)}
+                  className="w-4 h-4 rounded text-purple-600"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">تأكيد سداد رسوم المراحل المخصصة</span>
+              </label>
+            </div>
+
+            {/* 4. Account Info & Notifications */}
+            <div className="p-3 rounded-xl bg-white border border-[#e2e8f0] flex flex-col gap-2">
+              <p className="text-[11px] font-extrabold text-amber-700">🔔 الحساب والإشعارات</p>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canSendNotifications}
+                  onChange={(e) => setCanSendNotifications(e.target.checked)}
+                  className="w-4 h-4 rounded text-amber-600"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">إرسال وتحديث إشعارات المستفيد</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canViewAccountInfo}
+                  onChange={(e) => setCanViewAccountInfo(e.target.checked)}
+                  className="w-4 h-4 rounded text-amber-600"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">الاطلاع على بيانات الحساب البنكي ومحافظ USDT</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={canEditAccountInfo}
+                  onChange={(e) => setCanEditAccountInfo(e.target.checked)}
+                  className="w-4 h-4 rounded text-amber-600"
+                />
+                <span className="text-[11px] font-bold text-[#334155]">تعديل بيانات الحساب البنكي والإيداع</span>
+              </label>
+            </div>
           </div>
 
-          {/* Buttons */}
+          {/* Action Buttons */}
           <div className="flex gap-2.5 mt-2">
             <button
               type="button"
@@ -268,6 +485,9 @@ export function AgentFormModal({ mode, initialAgent, onSave, onClose, loading }:
   );
 }
 
+/**
+ * Assign Beneficiaries to a specific Agent (Admin View)
+ */
 export function AssignBeneficiariesModal({
   agent,
   beneficiaries,
@@ -282,7 +502,9 @@ export function AssignBeneficiariesModal({
   loading: boolean;
 }) {
   const [selectedIds, setSelectedIds] = useState<number[]>(
-    beneficiaries.filter((b) => b.agentId === agent.id).map((b) => Number(b.id))
+    beneficiaries
+      .filter((b) => (b.agentIds && b.agentIds.includes(agent.id)) || b.agentId === agent.id)
+      .map((b) => Number(b.id))
   );
   const [search, setSearch] = useState("");
 
@@ -299,18 +521,22 @@ export function AssignBeneficiariesModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
       style={{ background: "rgba(10,15,40,0.6)", backdropFilter: "blur(4px)", fontFamily: "'Cairo', sans-serif" }}
       dir="rtl"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <div className="w-full max-w-md bg-white rounded-3xl overflow-hidden shadow-2xl max-h-[85vh] flex flex-col">
-        <div className="px-5 py-4 border-b border-[#eef0f6] flex items-center justify-between"
-          style={{ background: "linear-gradient(135deg,#1a1f3c,#2952e3)" }}>
+        <div
+          className="px-5 py-4 border-b border-[#eef0f6] flex items-center justify-between"
+          style={{ background: "linear-gradient(135deg,#1a1f3c,#2952e3)" }}
+        >
           <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-white">
             ✕
           </button>
           <div className="text-right">
-            <h3 className="text-[16px] font-extrabold text-white">تعيين مستفيدين للوكيل</h3>
+            <h3 className="text-[16px] font-extrabold text-white">إسناد مستفيدين للوكيل</h3>
             <p className="text-white/70 text-[11px]">{agent.name} (@{agent.username})</p>
           </div>
         </div>
@@ -332,12 +558,13 @@ export function AssignBeneficiariesModal({
 
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
           {filtered.length === 0 ? (
-            <p className="text-center text-[12px] text-[#94a3b8] py-8">لا يوجد مستفيدين مطابقين</p>
+            <p className="text-center text-[12px] text-[#94a3b8] py-8">لا يوجد مستفيدون مطابقون</p>
           ) : (
             filtered.map((b) => {
               const numId = Number(b.id);
               const isChecked = selectedIds.includes(numId);
-              const otherAgent = b.agentId && b.agentId !== agent.id ? b.agentName : null;
+              const otherAgents = (b.agentNames || []).filter((n) => n !== agent.name);
+
               return (
                 <div
                   key={b.id}
@@ -356,11 +583,15 @@ export function AssignBeneficiariesModal({
                   />
                   <div className="text-right flex-1 pr-3">
                     <p className="text-[13px] font-bold text-[#1a1f3c] leading-tight">{b.name}</p>
-                    <p className="text-[11px] text-[#64748b] mt-0.5">@{b.username}</p>
-                    {otherAgent && (
-                      <span className="text-[9px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded mt-1 inline-block">
-                        مرتبط حالياً بـ: {otherAgent}
-                      </span>
+                    <p className="text-[11px] text-[#64748b] mt-0.5" dir="ltr" style={{ textAlign: "right" }}>
+                      @{b.username}
+                    </p>
+                    {otherAgents.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        <span className="text-[9px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded">
+                          مسند أيضاً إلى: {otherAgents.join("، ")}
+                        </span>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -384,6 +615,160 @@ export function AssignBeneficiariesModal({
             style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}
           >
             {loading ? "جارٍ الحفظ..." : `حفظ التعيين (${selectedIds.length})`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Assign Multiple Agents to a single Beneficiary (Admin or Beneficiary Card View)
+ */
+export function AssignAgentsToBeneficiaryModal({
+  beneficiary,
+  agents,
+  onSave,
+  onClose,
+  loading,
+}: {
+  beneficiary: { id: string; name: string; username: string; agentIds?: number[]; agentNames?: string[]; agentId?: number | null };
+  agents: Agent[];
+  onSave: (agentIds: number[]) => Promise<void>;
+  onClose: () => void;
+  loading: boolean;
+}) {
+  const initialIds = beneficiary.agentIds && beneficiary.agentIds.length > 0
+    ? beneficiary.agentIds
+    : beneficiary.agentId ? [beneficiary.agentId] : [];
+
+  const [selectedAgentIds, setSelectedAgentIds] = useState<number[]>(initialIds);
+  const [error, setError] = useState("");
+
+  function toggleAgent(agentId: number) {
+    setSelectedAgentIds((prev) =>
+      prev.includes(agentId) ? prev.filter((id) => id !== agentId) : [...prev, agentId]
+    );
+  }
+
+  async function handleSave() {
+    setError("");
+    try {
+      await onSave(selectedAgentIds);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "فشلت العملية");
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      style={{ background: "rgba(10,15,40,0.6)", backdropFilter: "blur(4px)", fontFamily: "'Cairo', sans-serif" }}
+      dir="rtl"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-md bg-white rounded-3xl overflow-hidden shadow-2xl max-h-[85vh] flex flex-col">
+        <div
+          className="px-5 py-4 border-b border-[#eef0f6] flex items-center justify-between"
+          style={{ background: "linear-gradient(135deg,#1a1f3c,#2952e3)" }}
+        >
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-white">
+            ✕
+          </button>
+          <div className="text-right">
+            <h3 className="text-[16px] font-extrabold text-white">إسناد الوكلاء للمستفيد</h3>
+            <p className="text-white/70 text-[11px]">{beneficiary.name} (@{beneficiary.username})</p>
+          </div>
+        </div>
+
+        <div className="p-4 bg-[#f8fafc] border-b border-[#e2e8f0]">
+          <p className="text-[12px] text-[#475569] font-medium leading-relaxed">
+            يمكنك إسناد هذا المستفيد إلى وكيل واحد أو عدة وكلاء في آن واحد. سيتمكن الوكلاء المختارون من متابعة الحساب وفقاً لصلاحياتهم وحصصهم.
+          </p>
+          <div className="flex items-center justify-between mt-2 text-[11px] font-bold text-[#64748b]">
+            <span>الوكلاء المحددون: {selectedAgentIds.length}</span>
+            <span>إجمالي الوكلاء المتاحين: {agents.length}</span>
+          </div>
+        </div>
+
+        {error && (
+          <div className="mx-4 mt-3 px-3 py-2 rounded-xl bg-red-50 text-red-700 text-[12px] font-bold text-center border border-red-200">
+            {error}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
+          {agents.length === 0 ? (
+            <p className="text-center text-[12px] text-[#94a3b8] py-8">لا يوجد وكلاء مسجلون حالياً</p>
+          ) : (
+            agents.map((ag) => {
+              const isSelected = selectedAgentIds.includes(ag.id);
+              const count = ag.currentBeneficiariesCount ?? 0;
+              const quota = ag.maxBeneficiariesQuota;
+              const isQuotaReached = !isSelected && count >= quota;
+
+              return (
+                <div
+                  key={ag.id}
+                  onClick={() => {
+                    if (isQuotaReached) return;
+                    toggleAgent(ag.id);
+                  }}
+                  className={`p-3 rounded-2xl border transition-all flex items-center justify-between ${
+                    isQuotaReached
+                      ? "opacity-60 bg-gray-50 border-gray-200 cursor-not-allowed"
+                      : isSelected
+                      ? "bg-blue-50/70 border-[#2952e3] cursor-pointer"
+                      : "bg-white border-[#e2e8f0] hover:bg-[#f8fafc] cursor-pointer"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    disabled={isQuotaReached}
+                    onChange={() => {}}
+                    className="w-4 h-4 rounded text-[#2952e3] cursor-pointer"
+                  />
+                  <div className="text-right flex-1 pr-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-[#64748b] bg-gray-100 px-2 py-0.5 rounded-lg">
+                        {count} / {quota} مستفيد
+                      </span>
+                      <p className="text-[13px] font-bold text-[#1a1f3c]">{ag.name}</p>
+                    </div>
+                    <div className="flex items-center justify-between mt-1">
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                        ag.status === "active" ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"
+                      }`}>
+                        {ag.status === "active" ? "نشط" : "مجمّد"}
+                      </span>
+                      <p className="text-[11px] text-[#64748b]" dir="ltr">@{ag.username}</p>
+                    </div>
+                    {isQuotaReached && (
+                      <p className="text-[10px] text-red-600 font-bold mt-1 text-right">⚠️ الحصة مكتملة لهذا الوكيل</p>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="p-4 border-t border-[#e2e8f0] flex gap-2.5">
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className="flex-1 py-2.5 rounded-xl border border-[#cbd5e1] text-[#475569] font-bold text-[13px]"
+          >
+            إلغاء
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={loading}
+            className="flex-1 py-2.5 rounded-xl text-white font-bold text-[13px]"
+            style={{ background: "linear-gradient(135deg,#0f7a38,#22c55e)" }}
+          >
+            {loading ? "جارٍ الحفظ..." : `تأكيد الإسناد (${selectedAgentIds.length})`}
           </button>
         </div>
       </div>
@@ -430,10 +815,12 @@ export function AgentChangePasswordModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
       style={{ background: "rgba(10,15,40,0.6)", backdropFilter: "blur(4px)", fontFamily: "'Cairo', sans-serif" }}
       dir="rtl"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <div className="w-full max-w-sm bg-white rounded-3xl p-5 shadow-2xl">
         <h3 className="text-[16px] font-extrabold text-[#1a1f3c] text-center mb-1">تغيير كلمة المرور</h3>
         <p className="text-[11px] text-[#64748b] text-center mb-4">أدخل كلمة المرور الحالية والجديدة</p>

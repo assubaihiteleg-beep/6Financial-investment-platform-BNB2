@@ -33,7 +33,9 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 
-const clientDist = path.resolve(process.cwd(), "artifacts/financial-platform/dist/public");
+const clientDist = fs.existsSync(path.resolve(process.cwd(), "dist/public"))
+  ? path.resolve(process.cwd(), "dist/public")
+  : path.resolve(process.cwd(), "artifacts/financial-platform/dist/public");
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
   app.use((req, res, next) => {
