@@ -1,0 +1,29 @@
+Here is a complete analysis of the current implementation:
+
+1. Are beneficiary records stored in the production database or local storage?
+
+Production database (PostgreSQL). All beneficiary data is stored in the beneficiaries table via Drizzle ORM (lib/db/src/schema/beneficiaries.ts). The app fetches from /api/beneficiaries on every load. localStorage is only used as a read-only fallback cache — it is written to after a successful API fetch, and only read if the API call fails. It is never the source of truth.
+
+2. Are admin accounts stored in the production database or local storage?
+
+Neither — they are hardcoded directly in the frontend JavaScript source code:
+
+ADMIN_USERNAME = "Assubaihi"
+ADMIN_PASSWORD = "admin123"   ← lines 135–136 in App.tsx
+
+This means: (a) there is only ever one admin account, (b) the credentials are visible to anyone who inspects the page source, and (c) changing the password requires a code deployment.
+
+3. Are notifications stored in the production database?
+
+Yes. Notifications have their own notifications table in PostgreSQL (lib/db/src/schema/notifications.ts). All reads and writes go through /api/beneficiaries/:id/notifications and related endpoints. They persist permanently and are never stored in the browser.
+
+4. If you close your browser and return later, will all beneficiary data remain available?
+
+Yes. Since the database is the source of truth, closing and reopening the browser has no effect on the data. The app re-fetches everything from the API on load.
+
+5. If a beneficiary opens their unique URL from a different device, will they see the same data?
+
+Yes. All devices query the same API, which reads from the same PostgreSQL database. The data is identical regardless of device, browser, or location.
+
+⚠️ One important finding:
+The admin password (admin123) is exposed in the client-side JavaScript bundle. Anyone who opens browser DevTools and searches the source can find it. If security matters, the admin login should be validated server-side with the password stored securely in the database or environment variables

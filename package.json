@@ -4,14 +4,14 @@
   "license": "MIT",
   "packageManager": "pnpm@10.26.1",
   "scripts": {
-    "dev": "node -e 'if(!require(\"fs\").existsSync(\"dist/index.mjs\")||!require(\"fs\").existsSync(\"dist/public/index.html\")){require(\"child_process\").execSync(\"pnpm run build\",{stdio:\"inherit\"})}' && node dist/index.mjs",
+    "dev": "node -e 'if(!require(\"fs\").existsSync(\"dist/index.mjs\")||!require(\"fs\").existsSync(\"dist/public/index.html\")){require(\"child_process\").execSync(\"npm run build\",{stdio:\"inherit\"})}' && node dist/index.mjs",
     "start": "node server.ts",
-    "build:client": "pnpm --filter @workspace/financial-platform run build",
-    "build:server": "pnpm --filter @workspace/api-server run build",
-    "build": "pnpm run typecheck && pnpm run build:client && pnpm run build:server && node -e 'const fs=require(\"fs\"); fs.mkdirSync(\"dist/public\", {recursive: true}); fs.cpSync(\"artifacts/api-server/dist\", \"dist\", {recursive: true}); fs.cpSync(\"artifacts/financial-platform/dist/public\", \"dist/public\", {recursive: true});'",
+    "build:client": "npm --prefix artifacts/financial-platform run build",
+    "build:server": "npm --prefix artifacts/api-server run build",
+    "build": "npm run typecheck && npm run build:client && npm run build:server && node -e 'const fs=require(\"fs\"); fs.mkdirSync(\"dist/public\", {recursive: true}); fs.cpSync(\"artifacts/api-server/dist\", \"dist\", {recursive: true}); fs.cpSync(\"artifacts/financial-platform/dist/public\", \"dist/public\", {recursive: true});'",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm --recursive --if-present run typecheck",
-    "lint": "pnpm run typecheck"
+    "typecheck": "npm run typecheck:libs && npm --prefix artifacts/financial-platform run typecheck && npm --prefix artifacts/api-server run typecheck",
+    "lint": "npm run typecheck"
   },
   "private": true,
   "devDependencies": {

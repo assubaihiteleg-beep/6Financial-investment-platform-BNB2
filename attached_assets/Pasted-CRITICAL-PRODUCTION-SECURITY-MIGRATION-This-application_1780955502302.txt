@@ -1,0 +1,113 @@
+CRITICAL PRODUCTION SECURITY MIGRATION
+
+This application is already live and actively used by real beneficiaries.
+
+IMPORTANT:
+
+Do NOT redesign any UI.
+Do NOT modify the beneficiary dashboard design.
+Do NOT modify the admin dashboard design.
+Do NOT change routes.
+Do NOT change beneficiary URLs.
+Do NOT delete any data.
+Do NOT reset the database.
+Do NOT create a new project.
+
+The goal is ONLY to migrate beneficiary authentication to the same secure architecture already used for admin authentication.
+
+==================================================
+DATA PRESERVATION REQUIREMENTS
+==================================================
+
+Before making changes:
+
+- Preserve all beneficiaries.
+- Preserve all usernames.
+- Preserve all passwords (users must continue logging in with their existing passwords).
+- Preserve all beneficiary URLs/slugs.
+- Preserve all financial data.
+- Preserve all notifications.
+- Preserve all account records.
+- Preserve all existing functionality.
+
+No beneficiary should lose access after migration.
+
+==================================================
+SECURITY MIGRATION
+==================================================
+
+Implement the following:
+
+1. Hash all beneficiary passwords using bcrypt.
+
+2. Migrate all existing beneficiary passwords to bcrypt hashes.
+
+3. Remove plaintext password storage.
+
+4. Create secure backend authentication endpoint:
+
+POST /api/auth/beneficiary/login
+
+5. Move beneficiary authentication entirely to the backend.
+
+6. Remove all client-side password comparisons.
+
+7. Frontend must only send credentials and receive success/failure responses.
+
+8. Remove password fields from every API response.
+
+9. GET /api/beneficiaries must never return passwords.
+
+10. GET /api/beneficiaries/by-slug/:slug must never return passwords.
+
+11. Protect beneficiary data access.
+
+12. Beneficiaries must only access their own data.
+
+13. Prevent access to other beneficiary records by manipulating URLs, IDs, API calls, or browser tools.
+
+14. Use the same secure pattern already implemented for admin authentication.
+
+==================================================
+COMPATIBILITY REQUIREMENTS
+==================================================
+
+The following must continue working exactly as before:
+
+- Admin login
+- Beneficiary login
+- Beneficiary dashboard
+- Admin dashboard
+- Beneficiary URLs
+- Notifications
+- Financial data
+- Existing accounts
+
+No visible UI changes.
+
+No route changes.
+
+No URL changes.
+
+==================================================
+AFTER IMPLEMENTATION
+==================================================
+
+Perform a complete security verification and return ONLY the results.
+
+Confirm:
+
+1. All beneficiary passwords are bcrypt hashed.
+2. No beneficiary passwords exist in plaintext.
+3. No beneficiary passwords are exposed through APIs.
+4. Authentication is performed server-side only.
+5. No client-side password validation exists.
+6. Existing beneficiary accounts still work.
+7. Existing beneficiary URLs still work.
+8. Existing financial data remains intact.
+9. Existing notifications remain intact.
+10. Beneficiaries can only access their own data.
+11. No UI changes were made.
+12. No beneficiary records were lost.
+
+Return a migration summary and verification results.
