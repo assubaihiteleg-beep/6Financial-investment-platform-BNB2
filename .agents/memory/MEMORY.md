@@ -1,2 +1,3 @@
 - [3-Phase Withdrawal Flow](withdrawal-phases.md) — withdrawal has 3 phases; phase2/3 visibility is admin-controlled (phase2Visible/phase3Visible booleans on beneficiaries table), NOT time-based.
 - [Custom Phases System](custom-phases.md) — admin can create/edit/delete custom phases (custom_phases table); per-user visibility+amount+status in user_custom_phases; DB schema has failureMessage not description.
+- [pnpm dependency isolation](pnpm-dependency-isolation.md) — externalized server imports must be direct API workspace dependencies; root hoisting can hide startup-only failures.

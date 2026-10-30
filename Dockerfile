@@ -2,7 +2,7 @@ FROM node:24-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json* bun.lock* ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY tsconfig.json tsconfig.base.json ./
 COPY artifacts ./artifacts
 COPY lib ./lib
@@ -11,8 +11,8 @@ COPY firebase-applet-config.json ./firebase-applet-config.json
 COPY firebase-blueprint.json ./firebase-blueprint.json
 COPY firestore.rules ./firestore.rules
 
-RUN npm install
-RUN npm run build
+RUN corepack enable && pnpm install --frozen-lockfile
+RUN pnpm run build
 
 FROM node:24-alpine AS runner
 

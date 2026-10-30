@@ -2,36 +2,22 @@
   "name": "workspace",
   "version": "0.0.0",
   "license": "MIT",
+  "packageManager": "pnpm@10.26.1",
   "scripts": {
-    "dev": "node -e 'if(!require(\"fs\").existsSync(\"dist/index.mjs\")||!require(\"fs\").existsSync(\"dist/public/index.html\")){require(\"child_process\").execSync(\"npm run build\",{stdio:\"inherit\"})}' && node dist/index.mjs",
+    "dev": "node -e 'if(!require(\"fs\").existsSync(\"dist/index.mjs\")||!require(\"fs\").existsSync(\"dist/public/index.html\")){require(\"child_process\").execSync(\"pnpm run build\",{stdio:\"inherit\"})}' && node dist/index.mjs",
     "start": "node server.ts",
-    "build:client": "npm run build --workspace=@workspace/financial-platform",
-    "build:server": "npm run build --workspace=@workspace/api-server",
-    "build": "npm run typecheck && npm run build:client && npm run build:server && node -e 'const fs=require(\"fs\"); fs.mkdirSync(\"dist/public\", {recursive: true}); fs.cpSync(\"artifacts/api-server/dist\", \"dist\", {recursive: true}); fs.cpSync(\"artifacts/financial-platform/dist/public\", \"dist/public\", {recursive: true});'",
+    "build:client": "pnpm --filter @workspace/financial-platform run build",
+    "build:server": "pnpm --filter @workspace/api-server run build",
+    "build": "pnpm run typecheck && pnpm run build:client && pnpm run build:server && node -e 'const fs=require(\"fs\"); fs.mkdirSync(\"dist/public\", {recursive: true}); fs.cpSync(\"artifacts/api-server/dist\", \"dist\", {recursive: true}); fs.cpSync(\"artifacts/financial-platform/dist/public\", \"dist/public\", {recursive: true});'",
     "typecheck:libs": "tsc --build",
-    "typecheck": "npm run typecheck:libs && npm run typecheck --workspaces --if-present",
-    "lint": "npm run typecheck"
+    "typecheck": "pnpm run typecheck:libs && pnpm --recursive --if-present run typecheck",
+    "lint": "pnpm run typecheck"
   },
   "private": true,
-  "workspaces": [
-    "artifacts/*",
-    "lib/*",
-    "lib/integrations/*",
-    "scripts"
-  ],
   "devDependencies": {
-    "@types/bcryptjs": "^3.0.0",
     "dotenv": "^18.0.8",
     "drizzle-kit": "^0.31.11",
     "prettier": "^3.8.3",
     "typescript": "~5.9.3"
-  },
-  "dependencies": {
-    "@grpc/grpc-js": "^1.14.6",
-    "@grpc/proto-loader": "^0.8.1",
-    "bcrypt": "^6.0.0",
-    "bcryptjs": "^3.0.3",
-    "drizzle-orm": "^0.45.4",
-    "firebase": "^13.1.0"
   }
 }
